@@ -9,7 +9,12 @@ http://localhost:4173/ and you drive it with the browser tools
 (`mcp__playwright__*`): navigate, click, type, resize and take screenshots.
 Read the diff only to find which screens the change touches.
 
-1. Read the PR description and look at its screenshots or videos.
+1. Read the PR description, then open every image or video it links in the
+   browser (`browser_navigate` to the URL, then a screenshot) and look at
+   each one. The description is what readers see, so judge its media too:
+   a screenshot that shows something the app does not do (an element in
+   the wrong place, stale text, a capture glitch) is a finding, named in
+   your summary with the file it is in.
 2. Open the app at a phone size (390×844) and walk through every screen
    and flow the diff touches, plus one step before and after it. Take a
    screenshot of each state you judge, saved under `review-screenshots/`
@@ -25,7 +30,7 @@ Read the diff only to find which screens the change touches.
 Judge:
 
 - Does the screen match the PR's screenshots, and does it do what the
-  description says?
+  description says? Where they differ, say which one is wrong.
 - Layout: nothing overlaps, is cut off or scrolls sideways at phone width;
   tap targets are at least 40 px; the bottom tab bar never hides content.
 - Clarity: a first-time user can tell what each screen is for and what to

@@ -45,6 +45,8 @@ workflow for the PR.
   the Playwright MCP server (`mcp__playwright__*`: click, type, resize,
   screenshot). Its screenshots are uploaded as the run's
   `review-screenshots` artifact. `ui-design.md` is the one that uses it.
+- A brief is plain instructions; the workflow already tells every reviewer
+  how to read the PR and how to post, so a brief only says what to judge.
 
 ## Setup
 
@@ -56,5 +58,7 @@ The reviewers run with `claude-code-action` and need the repository secret
 The `PR media` check fails until the PR description has a screenshot or a
 video (drag it into the description on GitHub). A PR with nothing to see
 (CI, docs, a refactor) takes the `no-visual-change` label instead.
-- A brief is plain instructions; the workflow already tells every reviewer
-  how to read the PR and how to post, so a brief only says what to judge.
+
+Do not take a full-page screenshot (Playwright's `fullPage: true`) of a
+screen with the fixed bottom tab bar: the bar lands mid-page. Make the
+viewport as tall as the page and take a normal screenshot.
