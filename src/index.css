@@ -487,3 +487,12 @@ button.icon {
 .sticky-actions {
   padding: 0 4px;
 }
+
+.out-heading {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 4px 0 -4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}

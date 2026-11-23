@@ -18,8 +18,9 @@ and each user pastes their own Claude API key.
    macros per 100 g. Packaged products can be scanned: the barcode is looked up
    in [Open Food Facts](https://world.openfoodfacts.org); if it is not there,
    photograph the nutrition label and Claude reads the values for you to
-   confirm. Each ware is on the "have" list, the "willing to buy" list or
-   neither, and is marked available, frozen or out.
+   confirm. Each ware is on the "use" list (what you have at home), the "buy"
+   list or neither, and is marked available, frozen or out: a ware can be on
+   your use list and out right now, like garden courgettes in winter.
 3. **Plan**: pick a share of your daily goals (or type a target), say how
    willing you are to shop, optionally add a wish ("something warm"), and
    generate. Your food preferences always apply. You see each portion fit Claude tries, then the recipe.

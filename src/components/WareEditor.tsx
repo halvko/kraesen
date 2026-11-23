@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { type Macros, type Ware, type WareList, type WareStatus } from '../types'
+import { LIST_LABEL, type Macros, type Ware, type WareList, type WareStatus } from '../types'
 import { MacroInputs } from './MacroInputs'
 
 export interface WareDraft {
@@ -44,9 +44,11 @@ export function WareEditor({ initial, title, banner, onSave, onCancel }: Props) 
         <label>
           <span>List</span>
           <select value={d.list} onChange={(e) => setD({ ...d, list: e.target.value as WareList })}>
-            <option value="have">Have</option>
-            <option value="buy">Willing to buy</option>
-            <option value="neither">Neither</option>
+            {Object.entries(LIST_LABEL).map(([v, l]) => (
+              <option key={v} value={v}>
+                {l}
+              </option>
+            ))}
           </select>
         </label>
         <label>

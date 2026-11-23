@@ -1,13 +1,13 @@
 import { lazy, Suspense, useState } from 'react'
 import { newId } from '../persist'
 import { useStore } from '../store'
-import { type Ware, type WareList, type WareStatus, zeroMacros } from '../types'
+import { LIST_LABEL, type Ware, type WareList, type WareStatus, zeroMacros } from '../types'
 import { type WareDraft, WareEditor } from './WareEditor'
 
 type Mode = { kind: 'list' } | { kind: 'scan' } | { kind: 'edit'; id?: string; draft: WareDraft; banner?: string; title: string }
 
 const SECTIONS: { list: WareList; title: string; empty: string }[] = [
-  { list: 'have', title: 'I have and want to use', empty: 'Nothing yet. Add home-grown produce or scan what is in the fridge.' },
+  { list: 'have', title: 'I want to use', empty: 'Nothing yet. Add home-grown produce or scan what is in the fridge.' },
   { list: 'buy', title: "I'm willing to buy", empty: 'Add wares you would happily pick up at the shop.' },
   { list: 'neither', title: 'On neither list', empty: '' },
 ]
@@ -61,6 +61,52 @@ export function WaresPage() {
   const q = filter.trim().toLowerCase()
   const shown = state.wares.filter((w) => !q || w.name.toLowerCase().includes(q) || w.brand?.toLowerCase().includes(q))
 
+  const row = (w: Ware) => (
+    <li key={w.id} className={`ware status-${w.status}`}>
+      <button
+        type="button"
+        className="ware-main"
+        onClick={() => setMode({ kind: 'edit', id: w.id, draft: { ...w }, title: 'Edit ware' })}
+      >
+        <span className="ware-name">
+          {w.name}
+          {w.brand ? <small> · {w.brand}</small> : null}
+        </span>
+        <span className="ware-macros">
+          P {w.per100.protein} · C {w.per100.carbs} · F {w.per100.fat} · {w.per100.kcal} kcal
+        </span>
+      </button>
+      <div className="ware-actions">
+        <select
+          aria-label={`Availability of ${w.name}`}
+          value={w.status}
+          onChange={(e) => patch(w.id, { status: e.target.value as WareStatus })}
+        >
+          {Object.entries(STATUS_LABEL).map(([v, l]) => (
+            <option key={v} value={v}>
+              {l}
+            </option>
+          ))}
+        </select>
+        <select aria-label={`List for ${w.name}`} value={w.list} onChange={(e) => patch(w.id, { list: e.target.value as WareList })}>
+          {Object.entries(LIST_LABEL).map(([v, l]) => (
+            <option key={v} value={v}>
+              {l}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="icon"
+          aria-label={`Delete ${w.name}`}
+          onClick={() => confirm(`Delete ${w.name}?`) && update((s) => ({ ...s, wares: s.wares.filter((x) => x.id !== w.id) }))}
+        >
+          ✕
+        </button>
+      </div>
+    </li>
+  )
+
   return (
     <div className="page">
       <div className="row">
@@ -87,57 +133,21 @@ export function WaresPage() {
       {SECTIONS.map((sec) => {
         const items = shown.filter((w) => w.list === sec.list).sort((a, b) => a.name.localeCompare(b.name))
         if (sec.list === 'neither' && items.length === 0) return null
+        const current = items.filter((w) => w.status !== 'out')
+        const out = items.filter((w) => w.status === 'out')
         return (
           <section key={sec.list} className="card">
             <h2>
               {sec.title} <span className="count">{items.length}</span>
             </h2>
             {items.length === 0 && <p className="hint">{sec.empty}</p>}
-            <ul className="ware-list">
-              {items.map((w) => (
-                <li key={w.id} className={`ware status-${w.status}`}>
-                  <button
-                    type="button"
-                    className="ware-main"
-                    onClick={() => setMode({ kind: 'edit', id: w.id, draft: { ...w }, title: 'Edit ware' })}
-                  >
-                    <span className="ware-name">
-                      {w.name}
-                      {w.brand ? <small> · {w.brand}</small> : null}
-                    </span>
-                    <span className="ware-macros">
-                      P {w.per100.protein} · C {w.per100.carbs} · F {w.per100.fat} · {w.per100.kcal} kcal
-                    </span>
-                  </button>
-                  <div className="ware-actions">
-                    <select
-                      aria-label={`Availability of ${w.name}`}
-                      value={w.status}
-                      onChange={(e) => patch(w.id, { status: e.target.value as WareStatus })}
-                    >
-                      {Object.entries(STATUS_LABEL).map(([v, l]) => (
-                        <option key={v} value={v}>
-                          {l}
-                        </option>
-                      ))}
-                    </select>
-                    <select aria-label={`List for ${w.name}`} value={w.list} onChange={(e) => patch(w.id, { list: e.target.value as WareList })}>
-                      <option value="have">Have</option>
-                      <option value="buy">Buy</option>
-                      <option value="neither">Neither</option>
-                    </select>
-                    <button
-                      type="button"
-                      className="icon"
-                      aria-label={`Delete ${w.name}`}
-                      onClick={() => confirm(`Delete ${w.name}?`) && update((s) => ({ ...s, wares: s.wares.filter((x) => x.id !== w.id) }))}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <ul className="ware-list">{current.map(row)}</ul>
+            {out.length > 0 && (
+              <>
+                <h3 className="out-heading">Out right now</h3>
+                <ul className="ware-list">{out.map(row)}</ul>
+              </>
+            )}
           </section>
         )
       })}

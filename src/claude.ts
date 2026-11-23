@@ -329,7 +329,7 @@ export async function generateMeal(
   const limit = BUY_LIMITS[req.willingness]
   const allowed = new Map((limit > 0 ? [...have, ...buy] : have).map((w) => [w.id, w]))
   if (have.length === 0 && (limit === 0 || buy.length === 0)) {
-    throw new Error('No usable wares. Add some to your "Have" list (or allow buying) first.')
+    throw new Error('No usable wares. Add some to your "Use" list (or allow buying) first.')
   }
 
   const { system, user } = buildPrompt(req, have, buy, limit)

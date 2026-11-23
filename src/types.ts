@@ -21,6 +21,9 @@ export type Macros = Record<MacroKey, number>
 /** Which list a ware is on: "have" (want to use it), "buy" (willing to buy it), or neither. */
 export type WareList = 'have' | 'buy' | 'neither'
 
+/** What each list is called in the app. The stored value 'have' is shown as "Use". */
+export const LIST_LABEL: Record<WareList, string> = { have: 'Use', buy: 'Buy', neither: 'Neither' }
+
 export type WareStatus = 'available' | 'frozen' | 'out'
 
 export type WareSource = 'custom' | 'openfoodfacts' | 'label'
