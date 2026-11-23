@@ -115,8 +115,8 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
   const [check, setCheck] = useState<Check>({ kind: 'idle' })
   const model = state.settings.model
 
-  // The key is saved whatever the check says, so a network hiccup never blocks setup; the message says what happened.
-  // Saving comes after the check, because saving can finish the setup and close this form.
+  // The key is saved when the check passes, or when the user chooses "Save this key anyway" after a failed check,
+  // so a network hiccup never blocks setup. Saving comes after the check, because it can finish setup and close this form.
   const checkAndSave = async () => {
     const key = apiKey.trim()
     setCheck({ kind: 'checking' })

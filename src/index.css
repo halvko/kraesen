@@ -779,3 +779,8 @@ label > span.field-label {
   justify-content: space-between;
   gap: 8px;
 }
+
+/* A row kept in its old group for the visit after its stock changed. */
+.food.moved .food-main {
+  opacity: 0.7;
+}

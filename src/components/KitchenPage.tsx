@@ -22,18 +22,18 @@ export function KitchenPage() {
   const { state, update } = useStore()
   const [mode, setMode] = useState<Mode>({ kind: 'list' })
   const [filter, setFilter] = useState('')
-  // The group each food was in when its stock was first changed on this visit. Rows stay in that group, so a
-  // food never jumps away under the user's finger (a mistaken Not now would vanish into a collapsed group);
-  // they regroup the next time Kitchen opens.
-  const [placed, setPlaced] = useState<Record<string, Stock>>({})
+  // Each food's group as Kitchen opened, as StockSheet does. Rows stay in that group for the visit, so a food
+  // never jumps away under the user's finger (a mistaken Not now would vanish into a collapsed group); they
+  // regroup the next time Kitchen opens. Foods added or saved in the editor go straight to their own group.
+  const [placed, setPlaced] = useState<Record<string, Stock>>(() => Object.fromEntries(state.wares.map((w) => [w.id, w.stock])))
   const groupOf = (w: Ware) => placed[w.id] ?? w.stock
 
-  const save = (id: string | undefined, d: FoodDraft) => {
-    // A food saved in the editor goes straight to its new group.
-    if (id) setPlaced((p) => Object.fromEntries(Object.entries(p).filter(([k]) => k !== id)))
+  const save = (existing: string | undefined, d: FoodDraft) => {
+    const id = existing ?? newId()
+    setPlaced((p) => ({ ...p, [id]: d.stock }))
     update((s) => {
-      if (id) return { ...s, wares: s.wares.map((w) => (w.id === id ? { ...w, ...d } : w)) }
-      return { ...s, wares: [...s.wares, { ...d, id: newId(), createdAt: Date.now() }] }
+      if (existing) return { ...s, wares: s.wares.map((w) => (w.id === id ? { ...w, ...d } : w)) }
+      return { ...s, wares: [...s.wares, { ...d, id, createdAt: Date.now() }] }
     })
     setMode({ kind: 'list' })
   }
@@ -82,7 +82,7 @@ export function KitchenPage() {
       key={w.id}
       food={w}
       onOpen={() => setMode({ kind: 'edit', id: w.id, draft: { ...w }, title: 'Edit food' })}
-      onStockChange={(before) => setPlaced((p) => (before.id in p ? p : { ...p, [before.id]: before.stock }))}
+      movedFrom={groupOf(w) !== w.stock ? groupOf(w) : undefined}
     />
   )
 
@@ -114,7 +114,8 @@ export function KitchenPage() {
         if (items.length === 0 && !g.empty) return null
         const title = (
           <h2>
-            {STOCK_LABEL[g.stock]} <span className="count">{items.length}</span>
+            {/* The count is what is in this group now, not the rows kept here for the visit. */}
+            {STOCK_LABEL[g.stock]} <span className="count">{items.filter((w) => w.stock === g.stock).length}</span>
           </h2>
         )
         if (g.stock === 'off') {

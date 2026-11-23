@@ -34,7 +34,7 @@ export function describeError(e: unknown): ErrorInfo {
   return info(e instanceof Error ? e.message : String(e))
 }
 
-/** Sends a one-token request with this key and model. Throws, as any Claude call does, when the key is rejected or the API cannot be reached. */
+/** Sends a one-token request with this key and model. Throws when the key is rejected or the API cannot be reached. */
 export async function checkKey(apiKey: string, model: string): Promise<void> {
   await makeClient(apiKey).beta.messages.create({
     model,
@@ -169,8 +169,7 @@ function formatMacros(m: Macros) {
   return { protein_g: r.protein, carbs_g: r.carbs, fat_g: r.fat, kcal: r.kcal }
 }
 
-const BASE_TOOLS: BetaTool[] = [
-  {
+const COMPUTE_TOOL: BetaTool =   {
     name: 'compute_portions',
     description:
       'Given a set of ingredients (by ware_id) and optional gram bounds, the app computes the exact grams of each ' +
@@ -200,63 +199,57 @@ const BASE_TOOLS: BetaTool[] = [
         },
       },
     },
-  },
-  {
-    name: 'submit_recipe',
-    description:
-      'Submit the final recipe built on one solution from compute_portions. Ingredient amounts are taken from that ' +
-      'solution exactly, so write the steps using those gram amounts.',
-    input_schema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['solution_id', 'title', 'summary', 'extras', 'steps'],
-      properties: {
-        solution_id: { type: 'string' },
-        title: { type: 'string' },
-        summary: { type: 'string', description: 'One or two sentences describing the dish.' },
-        // Filled in per request by toolsFor().
-        extras: { type: 'array' },
-        steps: { type: 'array', items: { type: 'string' }, description: 'Cooking steps in order, with amounts and times.' },
-        tips: {
-          type: 'string',
-          description:
-            'Optional serving or variation tips. Like everything else, tips must not mention any food that is not in ' +
-            "the user's lists or STAPLES.",
-        },
-      },
-    },
-  },
-]
+  }
 
 /** Water may always be added; everything else must be one of the user's staples. */
 const WATER = 'water'
 
 /**
  * The tools for one request. The extras schema names the user's staples as the
- * only choices, so an extra is a staple by construction rather than free text
- * the app has to pick apart.
+ * only choices, so every extra is a staple by construction.
  */
 function toolsFor(staples: string[]): BetaTool[] {
-  const extras = {
-    type: 'array',
-    description:
-      'Seasonings with negligible macros that are not in the computation. Each is one of STAPLES, or water. ' +
-      'Empty when STAPLES is empty and no water is needed.',
-    items: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['staple'],
-      properties: {
-        staple: { type: 'string', enum: [...staples, WATER] },
-        amount: { type: 'string', description: 'Optional, e.g. "1 tsp", "a pinch", "to taste".' },
+  return [
+    COMPUTE_TOOL,
+    {
+      name: 'submit_recipe',
+      description:
+        'Submit the final recipe built on one solution from compute_portions. Ingredient amounts are taken from that ' +
+        'solution exactly, so write the steps using those gram amounts.',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['solution_id', 'title', 'summary', 'extras', 'steps'],
+        properties: {
+          solution_id: { type: 'string' },
+          title: { type: 'string' },
+          summary: { type: 'string', description: 'One or two sentences describing the dish.' },
+          extras: {
+            type: 'array',
+            description:
+              'Seasonings with negligible macros that are not in the computation. Each is one of STAPLES, or water. ' +
+              'Empty when STAPLES is empty and no water is needed.',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['staple'],
+              properties: {
+                staple: { type: 'string', enum: [...staples, WATER] },
+                amount: { type: 'string', description: 'Optional, e.g. "1 tsp", "a pinch", "to taste".' },
+              },
+            },
+          },
+          steps: { type: 'array', items: { type: 'string' }, description: 'Cooking steps in order, with amounts and times.' },
+          tips: {
+            type: 'string',
+            description:
+              'Optional serving or variation tips. Like everything else, tips must not mention any food that is not in ' +
+              "the user's lists or STAPLES.",
+          },
+        },
       },
     },
-  }
-  return BASE_TOOLS.map((t) =>
-    t.name === 'submit_recipe'
-      ? { ...t, input_schema: { ...t.input_schema, properties: { ...(t.input_schema.properties as Record<string, unknown>), extras } } }
-      : t,
-  )
+  ]
 }
 
 function wareLine(w: Ware) {

@@ -58,6 +58,11 @@ describe('export and import', () => {
     expect(next.wares[0].stock).toBe('home')
   })
 
+  it('keeps a notice not yet dismissed on this device when importing a version 2 backup', () => {
+    const next = importJson(exportJson(sample()), { ...emptyState(), upgradeNotice: true })
+    expect(next.upgradeNotice).toBe(true)
+  })
+
   it('rejects files that are not JSON or not an export', () => {
     expect(() => importJson('{oops', emptyState())).toThrow('not valid JSON')
     expect(() => importJson('{"hello": 1}', emptyState())).toThrow('does not look like a Kraesen export')

@@ -236,7 +236,7 @@ describe('parseLabelReply', () => {
 
 describe('describeError', () => {
   const headers = new Headers()
-  it('offers Settings only for key and permission errors', () => {
+  it('offers a key fix only for key and permission errors', () => {
     const cases: [unknown, string, boolean][] = [
       [new Anthropic.AuthenticationError(401, undefined, 'bad key', headers), 'API key was rejected', true],
       [new Anthropic.PermissionDeniedError(403, undefined, 'no', headers), 'not allowed to use that model', true],
