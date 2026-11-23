@@ -106,6 +106,10 @@ export function partitionWares(wares: Ware[]): { have: Ware[]; buy: Ware[] } {
   return { have: usable.filter((w) => w.list === 'have'), buy: usable.filter((w) => w.list === 'buy') }
 }
 
+/** A plain object (not null, not an array), the shape every outside JSON value is checked against first. */
+export type Loose = Record<string, unknown>
+export const isObj = (v: unknown): v is Loose => !!v && typeof v === 'object' && !Array.isArray(v)
+
 /**
  * The one rule for macro and gram values from outside the app (stored data, Open
  * Food Facts, Claude, form inputs): a finite number ≥ 0, numeric strings allowed.

@@ -11,6 +11,7 @@ import {
   type WareList,
   type WareSource,
   type WareStatus,
+  isObj,
   toNonNegative,
 } from './types'
 
@@ -18,9 +19,6 @@ import {
 // dropped here, so the UI can trust the types. A backup edited by hand or written
 // by another version of the app must never crash the app on load.
 
-type Loose = Record<string, unknown>
-
-const isObj = (v: unknown): v is Loose => !!v && typeof v === 'object' && !Array.isArray(v)
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : undefined)
 
 /** A usable macro or gram value, or 0. */

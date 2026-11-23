@@ -44,6 +44,13 @@ describe('lookupBarcode', () => {
     expect((await lookupBarcode('1'))?.per100).toEqual({ protein: 12.5, carbs: 3, fat: 0.5, kcal: 70 })
   })
 
+  it('treats values with units or decimal commas as missing', async () => {
+    mockFetch(200, found({ product_name: 'X', nutriments: { proteins_100g: '12.5g', carbohydrates_100g: '3,5', fat_100g: 1, 'energy-kcal_100g': 70 } }))
+    const p = await lookupBarcode('1')
+    expect(p?.incomplete).toBe(true)
+    expect(p?.per100).toEqual({ protein: 0, carbs: 0, fat: 1, kcal: 70 })
+  })
+
   it('marks missing macros as incomplete and sets them to 0', async () => {
     mockFetch(200, found({ product_name: 'X', nutriments: { proteins_100g: 10 } }))
     const p = await lookupBarcode('1')

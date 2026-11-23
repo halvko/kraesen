@@ -8,7 +8,7 @@ import type {
   BetaToolUseBlock,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { type PortionRequest, type Solution, solvePortions } from './solver'
-import { MACRO_KEYS, type Macros, partitionWares, type Recipe, roundMacro, roundMacros, toNonNegative, type Ware } from './types'
+import { isObj, MACRO_KEYS, type Macros, partitionWares, type Recipe, roundMacro, roundMacros, toNonNegative, type Ware } from './types'
 
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 
@@ -23,7 +23,7 @@ export interface ErrorInfo {
   fixInSettings: boolean
 }
 
-/** Classifies an error once, so its message and the action offered for it cannot drift apart. */
+/** Turns an error into a message for the user, and says whether the fix is in Settings. */
 export function describeError(e: unknown): ErrorInfo {
   const info = (message: string, fixInSettings = false) => ({ message, fixInSettings })
   if (e instanceof Anthropic.AuthenticationError) return info('The API key was rejected. Check it in Settings.', true)
@@ -76,13 +76,13 @@ const LABEL_SCHEMA = {
 export function parseLabelReply(msg: Pick<BetaMessage, 'stop_reason' | 'content'>): LabelReading {
   if (msg.stop_reason === 'refusal') throw new Error('Claude declined to read this image.')
   if (msg.stop_reason === 'max_tokens') throw new Error('The label reading was cut off. Please try again.')
-  let raw: Record<string, unknown>
+  let raw: unknown
   try {
     raw = JSON.parse(textOf(msg as BetaMessage))
   } catch {
     throw new Error('Claude did not return a readable answer. Please try again.')
   }
-  if (!raw || typeof raw !== 'object') throw new Error('Claude did not return a readable answer. Please try again.')
+  if (!isObj(raw)) throw new Error('Claude did not return a readable answer. Please try again.')
   if (raw.readable !== true) return { readable: false, name: '', brand: '', per100: { protein: 0, carbs: 0, fat: 0, kcal: 0 }, basis_note: '' }
   const [protein, carbs, fat, kcal] = [raw.protein_g, raw.carbs_g, raw.fat_g, raw.kcal].map(toNonNegative)
   if (protein === undefined || carbs === undefined || fat === undefined || kcal === undefined) {
@@ -278,8 +278,6 @@ interface SubmitInput {
 type Parsed<T> = { ok: true; value: T } | { ok: false; error: string }
 const fail = (error: string): { ok: false; error: string } => ({ ok: false, error })
 
-type Loose = Record<string, unknown>
-const isObj = (v: unknown): v is Loose => !!v && typeof v === 'object' && !Array.isArray(v)
 const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
 
 function parseCompute(input: unknown): Parsed<ComputeIngredient[]> {
@@ -289,10 +287,15 @@ function parseCompute(input: unknown): Parsed<ComputeIngredient[]> {
   const out: ComputeIngredient[] = []
   for (const ing of input.ingredients as unknown[]) {
     if (!isObj(ing) || typeof ing.ware_id !== 'string') return fail('Each ingredient must be an object with a string ware_id')
-    const bound = (v: unknown) => (v === undefined ? { ok: true as const, n: undefined } : { ok: toNonNegative(v) !== undefined, n: toNonNegative(v) })
-    const [min, max, fixed] = [ing.min_grams, ing.max_grams, ing.fixed_grams].map(bound)
-    if (!min.ok || !max.ok || !fixed.ok) return fail(`Bounds for ${ing.ware_id} must be non-negative numbers`)
-    out.push({ ware_id: ing.ware_id, min_grams: min.n, max_grams: max.n, fixed_grams: fixed.n })
+    if ([ing.min_grams, ing.max_grams, ing.fixed_grams].some((v) => v !== undefined && toNonNegative(v) === undefined)) {
+      return fail(`Bounds for ${ing.ware_id} must be non-negative numbers`)
+    }
+    out.push({
+      ware_id: ing.ware_id,
+      min_grams: toNonNegative(ing.min_grams),
+      max_grams: toNonNegative(ing.max_grams),
+      fixed_grams: toNonNegative(ing.fixed_grams),
+    })
   }
   return { ok: true, value: out }
 }

@@ -1,7 +1,7 @@
-import type Anthropic from '@anthropic-ai/sdk'
+import Anthropic from '@anthropic-ai/sdk'
 import type { BetaMessage, BetaMessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { describe, expect, it } from 'vitest'
-import { type AgentEvent, generateMeal, type MealRequest, parseLabelReply } from './claude'
+import { type AgentEvent, describeError, generateMeal, type MealRequest, parseLabelReply } from './claude'
 import type { Ware } from './types'
 
 const ware = (id: string, list: Ware['list'], status: Ware['status'] = 'available'): Ware => ({
@@ -159,6 +159,11 @@ describe('parseLabelReply', () => {
     expect(r).toEqual({ readable: true, name: 'Skyr', brand: 'Arla', per100: { protein: 11, carbs: 4, fat: 0.2, kcal: 63 }, basis_note: 'Per 100 g.' })
   })
 
+  it('accepts numbers sent as numeric strings', () => {
+    const r = parseLabelReply(text(JSON.stringify({ readable: true, protein_g: '5', carbs_g: 1, fat_g: 1, kcal: 30 })))
+    expect(r.per100.protein).toBe(5)
+  })
+
   it('passes on an unreadable label', () => {
     expect(parseLabelReply(text(JSON.stringify({ readable: false }))).readable).toBe(false)
   })
@@ -168,5 +173,24 @@ describe('parseLabelReply', () => {
     expect(() => parseLabelReply({ stop_reason: 'end_turn', content: [] } as unknown as BetaMessage)).toThrow('readable answer')
     expect(() => parseLabelReply(text(JSON.stringify({ readable: true, protein_g: -1, carbs_g: 1, fat_g: 1, kcal: 1 })))).toThrow('do not make sense')
     expect(() => parseLabelReply(text(JSON.stringify({ readable: true, protein_g: 'five', carbs_g: 1, fat_g: 1, kcal: 1 })))).toThrow('do not make sense')
+  })
+})
+
+describe('describeError', () => {
+  const headers = new Headers()
+  it('offers Settings only for key and permission errors', () => {
+    const cases: [unknown, string, boolean][] = [
+      [new Anthropic.AuthenticationError(401, undefined, 'bad key', headers), 'API key was rejected', true],
+      [new Anthropic.PermissionDeniedError(403, undefined, 'no', headers), 'not allowed to use that model', true],
+      [new Anthropic.RateLimitError(429, undefined, 'slow', headers), 'Rate limited', false],
+      [new Anthropic.APIConnectionError({ message: 'offline' }), 'Could not reach', false],
+      [new Anthropic.InternalServerError(500, undefined, 'boom', headers), 'Claude API error 500', false],
+      [new Error('plain'), 'plain', false],
+    ]
+    for (const [e, message, fix] of cases) {
+      const info = describeError(e)
+      expect(info.message).toContain(message)
+      expect(info.fixInSettings).toBe(fix)
+    }
   })
 })

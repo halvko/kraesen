@@ -29,9 +29,9 @@ export function Scanner({ onResult, onCancel }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
   const controlsRef = useRef<IScannerControls | null>(null)
   // Aborted on unmount, so a lookup or label read that finishes after Cancel
-  // neither reopens the editor nor keeps a Claude request running. Made inside
-  // the effect so StrictMode's dev remount gets a fresh, unaborted controller.
-  const abortRef = useRef<AbortController>(new AbortController())
+  // neither reopens the editor nor keeps a Claude request running. Only the
+  // effect creates it, so StrictMode's dev remount gets a fresh, unaborted one.
+  const abortRef = useRef<AbortController | null>(null)
   const [phase, setPhase] = useState<Phase>('scanning')
   const [barcode, setBarcode] = useState('')
   const [manual, setManual] = useState('')
@@ -51,7 +51,7 @@ export function Scanner({ onResult, onCancel }: Props) {
 
   const handleCode = async (code: string) => {
     controlsRef.current?.stop()
-    const signal = abortRef.current.signal
+    const signal = abortRef.current!.signal
     const existing = state.wares.find((w) => w.barcode === code)
     if (existing) {
       setBarcode(code)
@@ -117,7 +117,7 @@ export function Scanner({ onResult, onCancel }: Props) {
       setError('Add your Claude API key in Settings to read labels.')
       return
     }
-    const signal = abortRef.current.signal
+    const signal = abortRef.current!.signal
     setPhase('reading')
     setError('')
     try {
