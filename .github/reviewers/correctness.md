@@ -1,5 +1,5 @@
 ---
-model: opus
+model: claude-fable-5-2
 ---
 
 Judge whether the change is correct: does the app do what the user expects
