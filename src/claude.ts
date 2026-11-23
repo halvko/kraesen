@@ -63,8 +63,10 @@ function textOf(msg: BetaMessage): string {
 // Tool-use loop shared by the macro lookup and the meal agent
 // ---------------------------------------------------------------------------
 
+/** A tool result to send back to Claude. */
+type ToolResult = { result: string; isError: boolean }
 /** What a client tool call produced: a result to send back to Claude, or the loop's final answer. */
-type ToolOutcome<T> = { result: string; isError: boolean } | { done: T }
+type ToolOutcome<T> = ToolResult | { done: T }
 
 interface ToolLoop<T> {
   system: string
@@ -630,7 +632,7 @@ export async function generateMeal(
   const solutions = new Map<string, Solution>()
   let counter = 0
 
-  const compute = (input: unknown): ToolOutcome<Recipe> => {
+  const compute = (input: unknown): ToolResult => {
     const parsed = parseCompute(input)
     if (!parsed.ok) return { result: parsed.error, isError: true }
     const requests: PortionRequest[] = []
@@ -708,7 +710,7 @@ export async function generateMeal(
     handlers: {
       compute_portions: (input) => {
         const r = compute(input)
-        if ('result' in r && r.isError) onEvent({ kind: 'rejected', reason: r.result })
+        if (r.isError) onEvent({ kind: 'rejected', reason: r.result })
         return r
       },
       submit_recipe: submit,

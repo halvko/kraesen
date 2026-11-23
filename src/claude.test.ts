@@ -76,15 +76,20 @@ describe('generateMeal', () => {
       reply([
         { type: 'tool_use', id: 'a', name: 'compute_portions', input: { ingredients: [{ ware_id: 'have1' }] } },
         { type: 'tool_use', id: 'b', name: 'make_coffee', input: {} },
+        { type: 'tool_use', id: 'b2', name: 'constructor', input: {} },
       ]),
       reply([{ type: 'tool_use', id: 'c', name: 'submit_recipe', input: recipe('S1') }]),
     ])
     const r = await run(client)
     const results = lastResults(requests)
-    expect(results.map((x) => x.tool_use_id)).toEqual(['a', 'b'])
+    expect(results.map((x) => x.tool_use_id)).toEqual(['a', 'b', 'b2'])
     expect(results[0].is_error).toBe(false)
     expect(JSON.parse(results[0].content).solution_id).toBe('S1')
-    expect(results[1].is_error).toBe(true)
+    // Names of Object.prototype members are unknown tools too, not calls into the prototype.
+    expect(results.slice(1).map((x) => [x.is_error, x.content])).toEqual([
+      [true, 'Unknown tool make_coffee'],
+      [true, 'Unknown tool constructor'],
+    ])
     expect(r.title).toBe('Dish')
     expect(r.ingredients.map((i) => i.wareId)).toEqual(['have1'])
     expect(r.ingredients[0].grams).toBeGreaterThan(0)
