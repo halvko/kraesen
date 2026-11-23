@@ -1,4 +1,4 @@
-import { MACRO_KEYS, type Macros, type Ware, zeroMacros } from './types'
+import { MACRO_KEYS, type MacroKey, type Macros, type Ware, zeroMacros } from './types'
 
 export interface PortionRequest {
   ware: Ware
@@ -48,17 +48,20 @@ export function sumMacros(portions: { ware: Ware; grams: number }[]): Macros {
 }
 
 function roundStep(grams: number, lo: number, hi: number): number {
+  // An amount the fit pushed against a bound stays exactly on it: rounding a
+  // 32 g cap to 30 g would give away part of the fit for nothing.
+  if (Math.abs(grams - lo) < 1e-6) return lo
+  if (Math.abs(grams - hi) < 1e-6) return hi
   const step = grams >= 30 ? 5 : 1
   const r = Math.round(grams / step) * step
   return Math.min(hi, Math.max(lo, r))
 }
 
 /**
- * Finds gram amounts within each ingredient's bounds that bring the meal's macros
- * as close as possible to the target. Minimises the sum of squared relative errors
- * over protein, carbs, fat and kcal with bounded coordinate descent (a convex
- * quadratic, so this converges to the optimum), then rounds to kitchen-friendly
- * amounts. Fully deterministic: the same input always gives the same grams.
+ * Picks grams within each ingredient's bounds (or exactly fixedGrams) that minimise
+ * the squared relative error to the target over protein, carbs, fat and kcal.
+ * Grams are rounded to 1 g below 30 g and to 5 g from 30 g, staying within bounds.
+ * The same input always gives the same grams.
  */
 export function solvePortions(requests: PortionRequest[], target: Macros): Solution {
   const n = requests.length
@@ -76,6 +79,8 @@ export function solvePortions(requests: PortionRequest[], target: Macros): Solut
     }
   }
 
+  // Bounded coordinate descent on a convex quadratic: each step minimises exactly
+  // along one ingredient, clamped to its bounds.
   // A[m][i]: macro m per gram of ingredient i, weighted by 1/scale_m.
   const weights = MACRO_KEYS.map((k) => 1 / Math.max(Math.abs(target[k]), SCALE_FLOOR[k]))
   const A = MACRO_KEYS.map((k, m) => requests.map((r) => (r.ware.per100[k] / 100) * weights[m]))
@@ -85,9 +90,7 @@ export function solvePortions(requests: PortionRequest[], target: Macros): Solut
   const x = lo.map((l, i) => Math.min(hi[i], Math.max(l, (l + Math.min(hi[i], 200)) / 2)))
   const ridge = 1e-9
 
-  const residual = () => t.map((tm, m) => A[m].reduce((s, a, i) => s + a * x[i], 0) - tm)
-
-  let r = residual()
+  const r = t.map((tm, m) => A[m].reduce((s, a, i) => s + a * x[i], 0) - tm)
   for (let sweep = 0; sweep < 5000; sweep++) {
     let maxChange = 0
     for (let i = 0; i < n; i++) {
@@ -107,24 +110,28 @@ export function solvePortions(requests: PortionRequest[], target: Macros): Solut
     }
     if (maxChange < 1e-7) break
   }
-  r = residual()
 
   const portions: PortionResult[] = requests.map((req, i) => ({
     ware: req.ware,
-    grams: req.fixedGrams !== undefined ? req.fixedGrams : roundStep(x[i], lo[i], hi[i]),
+    grams: roundStep(x[i], lo[i], hi[i]),
   }))
   return evaluate(portions, target)
+}
+
+/** How far actual is from target for one macro, relative to the target (0.1 = 10 % over). */
+export function relativeDeviation(k: MacroKey, actual: number, target: number): number {
+  return (actual - target) / Math.max(Math.abs(target), SCALE_FLOOR[k])
 }
 
 export function evaluate(portions: PortionResult[], target: Macros): Solution {
   const totals = sumMacros(portions)
   const deviation = zeroMacros()
-  const relativeDeviation = zeroMacros()
+  const relative = zeroMacros()
   let worstRelative = 0
   for (const k of MACRO_KEYS) {
     deviation[k] = totals[k] - target[k]
-    relativeDeviation[k] = deviation[k] / Math.max(Math.abs(target[k]), SCALE_FLOOR[k])
-    worstRelative = Math.max(worstRelative, Math.abs(relativeDeviation[k]))
+    relative[k] = relativeDeviation(k, totals[k], target[k])
+    worstRelative = Math.max(worstRelative, Math.abs(relative[k]))
   }
-  return { portions, totals, target, deviation, relativeDeviation, worstRelative }
+  return { portions, totals, target, deviation, relativeDeviation: relative, worstRelative }
 }

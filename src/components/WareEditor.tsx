@@ -44,9 +44,9 @@ export function WareEditor({ initial, title, banner, onSave, onCancel }: Props) 
         <label>
           <span>List</span>
           <select value={d.list} onChange={(e) => setD({ ...d, list: e.target.value as WareList })}>
-            <option value="have">I have it and want to use it</option>
-            <option value="buy">I'm willing to buy it</option>
-            <option value="catalog">Neither (keep for later)</option>
+            <option value="have">Have</option>
+            <option value="buy">Willing to buy</option>
+            <option value="neither">Neither</option>
           </select>
         </label>
         <label>

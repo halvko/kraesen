@@ -18,8 +18,8 @@ export const MACRO_UNITS: Record<MacroKey, string> = {
 
 export type Macros = Record<MacroKey, number>
 
-/** Which list a ware is on. "catalog" means it is known but on neither list. */
-export type WareList = 'have' | 'buy' | 'catalog'
+/** Which list a ware is on: "have" (want to use it), "buy" (willing to buy it), or neither. */
+export type WareList = 'have' | 'buy' | 'neither'
 
 export type WareStatus = 'available' | 'frozen' | 'out'
 
@@ -88,3 +88,20 @@ export const emptyState = (): AppState => ({
 })
 
 export const zeroMacros = (): Macros => ({ protein: 0, carbs: 0, fat: 0, kcal: 0 })
+
+/** Kcal to whole numbers, grams to one decimal: the one rounding rule for displaying and prompting macros. */
+export function roundMacro(k: MacroKey, v: number): number {
+  return k === 'kcal' ? Math.round(v) : Math.round(v * 10) / 10
+}
+
+export function roundMacros(m: Macros): Macros {
+  const out = zeroMacros()
+  for (const k of MACRO_KEYS) out[k] = roundMacro(k, m[k])
+  return out
+}
+
+/** The wares a meal may use: not out, split by list. Wares on neither list are never offered. */
+export function partitionWares(wares: Ware[]): { have: Ware[]; buy: Ware[] } {
+  const usable = wares.filter((w) => w.status !== 'out')
+  return { have: usable.filter((w) => w.list === 'have'), buy: usable.filter((w) => w.list === 'buy') }
+}

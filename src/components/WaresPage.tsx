@@ -1,5 +1,6 @@
 import { lazy, Suspense, useState } from 'react'
-import { newId, useStore } from '../store'
+import { newId } from '../persist'
+import { useStore } from '../store'
 import { type Ware, type WareList, type WareStatus, zeroMacros } from '../types'
 import { type WareDraft, WareEditor } from './WareEditor'
 
@@ -7,8 +8,8 @@ type Mode = { kind: 'list' } | { kind: 'scan' } | { kind: 'edit'; id?: string; d
 
 const SECTIONS: { list: WareList; title: string; empty: string }[] = [
   { list: 'have', title: 'I have and want to use', empty: 'Nothing yet. Add home-grown produce or scan what is in the fridge.' },
-  { list: 'buy', title: "I'm willing to buy", empty: 'Add things you would happily pick up at the shop.' },
-  { list: 'catalog', title: 'Neither for now', empty: '' },
+  { list: 'buy', title: "I'm willing to buy", empty: 'Add wares you would happily pick up at the shop.' },
+  { list: 'neither', title: 'On neither list', empty: '' },
 ]
 
 // The barcode reader and Claude SDK are only downloaded when scanning.
@@ -37,7 +38,7 @@ export function WaresPage() {
         <Suspense fallback={<p className="hint">Loading scanner…</p>}>
           <Scanner
             onCancel={() => setMode({ kind: 'list' })}
-            onResult={(draft, banner) => setMode({ kind: 'edit', draft, banner, title: 'Confirm product' })}
+            onResult={(draft, banner) => setMode({ kind: 'edit', draft, banner, title: 'Confirm ware' })}
           />
         </Suspense>
       </div>
@@ -85,7 +86,7 @@ export function WaresPage() {
       )}
       {SECTIONS.map((sec) => {
         const items = shown.filter((w) => w.list === sec.list).sort((a, b) => a.name.localeCompare(b.name))
-        if (sec.list === 'catalog' && items.length === 0) return null
+        if (sec.list === 'neither' && items.length === 0) return null
         return (
           <section key={sec.list} className="card">
             <h2>
@@ -123,7 +124,7 @@ export function WaresPage() {
                     <select aria-label={`List for ${w.name}`} value={w.list} onChange={(e) => patch(w.id, { list: e.target.value as WareList })}>
                       <option value="have">Have</option>
                       <option value="buy">Buy</option>
-                      <option value="catalog">Neither</option>
+                      <option value="neither">Neither</option>
                     </select>
                     <button
                       type="button"

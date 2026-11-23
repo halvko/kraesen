@@ -1,6 +1,7 @@
 import { get, set } from 'idb-keyval'
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
-import { type AppState, DEFAULT_MODEL, emptyState } from './types'
+import { normalize } from './persist'
+import type { AppState } from './types'
 
 const KEY = 'kraesen-state-v1'
 
@@ -14,66 +15,50 @@ interface StoreValue {
 
 const StoreContext = createContext<StoreValue | null>(null)
 
+type Load = { kind: 'loading' } | { kind: 'ready'; state: AppState } | { kind: 'failed'; message: string }
+
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AppState | null>(null)
-  const loaded = useRef(false)
+  const [load, setLoad] = useState<Load>({ kind: 'loading' })
+  // Saving starts only after a successful read, so a failed read can never
+  // overwrite the stored data with an empty state.
+  const canSave = useRef(false)
 
   useEffect(() => {
-    get<AppState>(KEY)
-      .then((s) => setState(normalize(s)))
-      .catch(() => setState(emptyState()))
-      .finally(() => {
-        loaded.current = true
+    get(KEY)
+      .then((s) => {
+        canSave.current = true
+        setLoad({ kind: 'ready', state: normalize(s) })
       })
+      .catch((e) => setLoad({ kind: 'failed', message: e instanceof Error ? e.message : String(e) }))
     // Ask the browser not to evict our data under storage pressure.
     navigator.storage?.persist?.().catch(() => {})
   }, [])
 
+  const state = load.kind === 'ready' ? load.state : null
   useEffect(() => {
-    if (state && loaded.current) set(KEY, state).catch((e) => console.error('Saving failed', e))
+    if (state && canSave.current) set(KEY, state).catch((e) => console.error('Saving failed', e))
   }, [state])
 
-  const update = useCallback((fn: Updater) => setState((s) => (s ? fn(s) : s)), [])
-  const replace = useCallback((s: AppState) => setState(normalize(s)), [])
+  const update = useCallback((fn: Updater) => setLoad((l) => (l.kind === 'ready' ? { kind: 'ready', state: fn(l.state) } : l)), [])
+  const replace = useCallback((s: AppState) => setLoad((l) => (l.kind === 'ready' ? { kind: 'ready', state: normalize(s) } : l)), [])
 
-  if (!state) return <div className="loading">Loading…</div>
-  return <StoreContext.Provider value={{ state, update, replace }}>{children}</StoreContext.Provider>
+  if (load.kind === 'loading') return <div className="loading">Loading…</div>
+  if (load.kind === 'failed') {
+    return (
+      <div className="loading" role="alert">
+        <p>Kraesen could not read its saved data ({load.message}). Nothing has been changed.</p>
+        <button type="button" onClick={() => location.reload()}>
+          Try again
+        </button>
+      </div>
+    )
+  }
+  return <StoreContext.Provider value={{ state: load.state, update, replace }}>{children}</StoreContext.Provider>
 }
 
+// eslint-disable-next-line react/only-export-components -- the hook belongs with its provider.
 export function useStore(): StoreValue {
   const v = useContext(StoreContext)
   if (!v) throw new Error('useStore outside StoreProvider')
   return v
 }
-
-function normalize(s: unknown): AppState {
-  const base = emptyState()
-  if (!s || typeof s !== 'object') return base
-  const o = s as Partial<AppState>
-  return {
-    version: 1,
-    profile: o.profile ?? null,
-    settings: { apiKey: o.settings?.apiKey ?? '', model: o.settings?.model || DEFAULT_MODEL },
-    wares: Array.isArray(o.wares) ? o.wares : [],
-    recipes: Array.isArray(o.recipes) ? o.recipes : [],
-  }
-}
-
-/** Export everything except the API key. */
-export function exportJson(state: AppState): string {
-  const { settings, ...rest } = state
-  return JSON.stringify({ ...rest, settings: { model: settings.model }, exportedAt: new Date().toISOString() }, null, 2)
-}
-
-export function importJson(text: string, current: AppState): AppState {
-  const parsed = JSON.parse(text) as Partial<AppState>
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.wares)) {
-    throw new Error('This file does not look like a Kraesen export.')
-  }
-  const next = normalize(parsed)
-  // Keep the key already on this device; exports never contain it.
-  next.settings.apiKey = current.settings.apiKey
-  return next
-}
-
-export const newId = () => crypto.randomUUID()

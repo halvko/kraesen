@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
-import { exportJson, importJson, useStore } from '../store'
+import { exportJson, importJson } from '../persist'
+import { useStore } from '../store'
 import { DEFAULT_MODEL, type Macros } from '../types'
 import { MacroInputs } from './MacroInputs'
 

@@ -1,4 +1,5 @@
-import { MACRO_KEYS, MACRO_LABELS, MACRO_UNITS, type Macros } from '../types'
+import { relativeDeviation } from '../solver'
+import { MACRO_KEYS, MACRO_LABELS, MACRO_UNITS, type Macros, roundMacro } from '../types'
 
 interface Props {
   value: Macros
@@ -23,7 +24,11 @@ export function MacroInputs({ value, onChange, suffix, idPrefix }: Props) {
             min={0}
             step="any"
             value={Number.isFinite(value[k]) ? value[k] : ''}
-            onChange={(e) => onChange({ ...value, [k]: e.target.value === '' ? 0 : Number(e.target.value) })}
+            onChange={(e) => {
+              // Typed values bypass min={0}; macros are never negative.
+              const n = Number(e.target.value)
+              onChange({ ...value, [k]: Number.isFinite(n) ? Math.max(0, n) : 0 })
+            }}
           />
         </label>
       ))}
@@ -37,17 +42,17 @@ export function MacroSummary({ macros, target }: { macros: Macros; target?: Macr
       {MACRO_KEYS.map((k) => {
         const v = macros[k]
         const t = target?.[k]
-        const off = t ? (v - t) / Math.max(t, 1) : 0
-        const cls = t === undefined ? '' : Math.abs(off) <= 0.1 ? 'ok' : Math.abs(off) <= 0.2 ? 'warn' : 'bad'
+        const off = t === undefined ? 0 : Math.abs(relativeDeviation(k, v, t))
+        const cls = t === undefined ? '' : off <= 0.1 ? 'ok' : off <= 0.2 ? 'warn' : 'bad'
         return (
           <div key={k} className={`macro-chip ${cls}`}>
             <strong>
-              {k === 'kcal' ? Math.round(v) : Math.round(v * 10) / 10}
+              {roundMacro(k, v)}
               {MACRO_UNITS[k] === 'g' ? ' g' : ' kcal'}
             </strong>
             <span>
               {MACRO_LABELS[k]}
-              {t !== undefined ? ` / ${k === 'kcal' ? Math.round(t) : Math.round(t)}` : ''}
+              {t !== undefined ? ` / ${roundMacro(k, t)}` : ''}
             </span>
           </div>
         )

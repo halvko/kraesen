@@ -11,18 +11,18 @@ export interface OffProduct {
 
 const num = (v: unknown): number | undefined => {
   const n = typeof v === 'string' ? parseFloat(v) : typeof v === 'number' ? v : NaN
-  return Number.isFinite(n) ? n : undefined
+  return Number.isFinite(n) && n >= 0 ? n : undefined
 }
 
 /**
  * Looks up a barcode in Open Food Facts (read API, no key, CORS enabled).
  * Returns null when the product is unknown or has no usable nutrition data.
  */
-export async function lookupBarcode(barcode: string): Promise<OffProduct | null> {
+export async function lookupBarcode(barcode: string, signal?: AbortSignal): Promise<OffProduct | null> {
   const code = barcode.replace(/\D/g, '')
   if (!code) return null
   const url = `https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,product_name_en,brands,nutriments`
-  const res = await fetch(url)
+  const res = await fetch(url, { signal })
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`Open Food Facts returned ${res.status}`)
   const data = await res.json()
@@ -40,7 +40,7 @@ export async function lookupBarcode(barcode: string): Promise<OffProduct | null>
   if ([protein, carbs, fat, kcal].every((v) => v === undefined)) return null
   return {
     barcode: code,
-    name: p.product_name_en || p.product_name || `Product ${code}`,
+    name: p.product_name_en || p.product_name || `Ware ${code}`,
     brand: typeof p.brands === 'string' ? p.brands.split(',')[0].trim() || undefined : undefined,
     per100: {
       protein: protein ?? 0,

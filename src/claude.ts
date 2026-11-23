@@ -8,13 +8,18 @@ import type {
   BetaToolUseBlock,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { type PortionRequest, type Solution, solvePortions } from './solver'
-import { MACRO_KEYS, type Macros, type Recipe, type Ware } from './types'
+import { MACRO_KEYS, type Macros, partitionWares, type Recipe, roundMacro, roundMacros, type Ware } from './types'
 
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 
 export function makeClient(apiKey: string) {
   // Direct browser access: the key never leaves this device except to api.anthropic.com.
   return new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 2 })
+}
+
+/** True when the user should fix their API key or model in Settings. */
+export function isKeyError(e: unknown): boolean {
+  return e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError
 }
 
 export function describeError(e: unknown): string {
@@ -64,40 +69,65 @@ const LABEL_SCHEMA = {
   },
 } as const
 
-export async function readNutritionLabel(apiKey: string, model: string, imageBase64: string, mediaType: string): Promise<LabelReading> {
-  const client = makeClient(apiKey)
-  const msg = await client.beta.messages.create({
-    model,
-    max_tokens: 4000,
-    betas: [FALLBACK_BETA],
-    fallbacks: 'default',
-    output_config: { effort: 'low', format: { type: 'json_schema', schema: LABEL_SCHEMA } },
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType as 'image/jpeg', data: imageBase64 } },
-          {
-            type: 'text',
-            text:
-              'This is a photo of a food nutrition label. Read the macronutrients per 100 g. ' +
-              'If only a per-serving column is shown, convert to per 100 g using the stated serving size. ' +
-              'Carbohydrates means total available carbohydrate (the "Carbohydrate" line, not fibre). ' +
-              'Labels may be in any language (e.g. Danish: Protein, Kulhydrat, Fedt, Energi).',
-          },
-        ],
-      },
-    ],
-  })
+const finiteNonNegative = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
+
+/** Turns Claude's reply about a label photo into a reading, or throws a message the user can act on. */
+export function parseLabelReply(msg: Pick<BetaMessage, 'stop_reason' | 'content'>): LabelReading {
   if (msg.stop_reason === 'refusal') throw new Error('Claude declined to read this image.')
-  const raw = JSON.parse(textOf(msg))
-  return {
-    readable: !!raw.readable,
-    name: raw.name ?? '',
-    brand: raw.brand ?? '',
-    per100: { protein: raw.protein_g ?? 0, carbs: raw.carbs_g ?? 0, fat: raw.fat_g ?? 0, kcal: Math.round(raw.kcal ?? 0) },
-    basis_note: raw.basis_note ?? '',
+  if (msg.stop_reason === 'max_tokens') throw new Error('The label reading was cut off. Please try again.')
+  let raw: Record<string, unknown>
+  try {
+    raw = JSON.parse(textOf(msg as BetaMessage))
+  } catch {
+    throw new Error('Claude did not return a readable answer. Please try again.')
   }
+  if (!raw || typeof raw !== 'object') throw new Error('Claude did not return a readable answer. Please try again.')
+  if (raw.readable !== true) return { readable: false, name: '', brand: '', per100: { protein: 0, carbs: 0, fat: 0, kcal: 0 }, basis_note: '' }
+  const nums = [raw.protein_g, raw.carbs_g, raw.fat_g, raw.kcal]
+  if (!nums.every(finiteNonNegative)) throw new Error('Claude returned numbers that do not make sense. Please try again.')
+  return {
+    readable: true,
+    name: typeof raw.name === 'string' ? raw.name : '',
+    brand: typeof raw.brand === 'string' ? raw.brand : '',
+    per100: { protein: raw.protein_g as number, carbs: raw.carbs_g as number, fat: raw.fat_g as number, kcal: Math.round(raw.kcal as number) },
+    basis_note: typeof raw.basis_note === 'string' ? raw.basis_note : '',
+  }
+}
+
+export async function readNutritionLabel(
+  client: Anthropic,
+  model: string,
+  imageBase64: string,
+  mediaType: 'image/jpeg' | 'image/png',
+  signal?: AbortSignal,
+): Promise<LabelReading> {
+  const msg = await client.beta.messages.create(
+    {
+      model,
+      max_tokens: 4000,
+      betas: [FALLBACK_BETA],
+      fallbacks: 'default',
+      output_config: { effort: 'low', format: { type: 'json_schema', schema: LABEL_SCHEMA } },
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+            {
+              type: 'text',
+              text:
+                'This is a photo of a food nutrition label. Read the macronutrients per 100 g. ' +
+                'If only a per-serving column is shown, convert to per 100 g using the stated serving size. ' +
+                'Carbohydrates means total available carbohydrate (the "Carbohydrate" line, not fibre). ' +
+                'Labels may be in any language (e.g. Danish: Protein, Kulhydrat, Fedt, Energi).',
+            },
+          ],
+        },
+      ],
+    },
+    { signal },
+  )
+  return parseLabelReply(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -120,10 +150,9 @@ export type AgentEvent =
   | { kind: 'rejected'; reason: string }
   | { kind: 'note'; text: string }
 
-const r1 = (n: number) => Math.round(n * 10) / 10
-
 function formatMacros(m: Macros) {
-  return { protein_g: r1(m.protein), carbs_g: r1(m.carbs), fat_g: r1(m.fat), kcal: Math.round(m.kcal) }
+  const r = roundMacros(m)
+  return { protein_g: r.protein, carbs_g: r.carbs, fat_g: r.fat, kcal: r.kcal }
 }
 
 const TOOLS: BetaTool[] = [
@@ -189,8 +218,7 @@ function wareLine(w: Ware) {
   return `- ${w.id} | ${w.name}${w.brand ? ` (${w.brand})` : ''}${status} | per 100 g: P ${p.protein} C ${p.carbs} F ${p.fat} kcal ${p.kcal}${w.notes ? ` | note: ${w.notes}` : ''}`
 }
 
-function buildPrompt(req: MealRequest, have: Ware[], buy: Ware[]) {
-  const limit = BUY_LIMITS[req.willingness]
+function buildPrompt(req: MealRequest, have: Ware[], buy: Ware[], limit: number) {
   const buyRule =
     limit === 0
       ? 'The user does not want to buy anything: use only wares from the HAVE list.'
@@ -219,8 +247,8 @@ function buildPrompt(req: MealRequest, have: Ware[], buy: Ware[]) {
     '- Write in English. Keep steps concrete with times and temperatures.'
 
   const user =
-    `Macro target for this meal: protein ${r1(req.target.protein)} g, carbs ${r1(req.target.carbs)} g, ` +
-    `fat ${r1(req.target.fat)} g, energy ${Math.round(req.target.kcal)} kcal.\n` +
+    `Macro target for this meal: protein ${roundMacro('protein', req.target.protein)} g, carbs ${roundMacro('carbs', req.target.carbs)} g, ` +
+    `fat ${roundMacro('fat', req.target.fat)} g, energy ${roundMacro('kcal', req.target.kcal)} kcal.\n` +
     (req.wish.trim() ? `Wish for this meal: ${req.wish.trim()}\n` : '') +
     `\nHAVE (at home, want to use):\n${have.map(wareLine).join('\n') || '(none)'}\n` +
     (limit > 0 ? `\nBUY (willing to buy):\n${buy.map(wareLine).join('\n') || '(none)'}\n` : '')
@@ -240,27 +268,38 @@ interface SubmitInput {
   tips?: string
 }
 
-const isNum = (v: unknown) => v === undefined || (typeof v === 'number' && Number.isFinite(v) && v >= 0)
+const optionalGrams = (v: unknown) => v === undefined || finiteNonNegative(v)
+const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
+
+/** Checks a submit_recipe input; returns an error message for Claude, or null if it is usable. */
+function submitProblem(input: unknown): string | null {
+  if (!input || typeof input !== 'object') return 'submit_recipe input must be an object'
+  const i = input as Record<string, unknown>
+  if (typeof i.solution_id !== 'string') return 'solution_id must be a string'
+  if (typeof i.title !== 'string' || !i.title.trim()) return 'title must be a non-empty string'
+  if (typeof i.summary !== 'string') return 'summary must be a string'
+  if (!isStringArray(i.steps) || i.steps.length === 0) return 'steps must be a non-empty array of strings'
+  if (!isStringArray(i.extras)) return 'extras must be an array of strings'
+  if (i.tips !== undefined && typeof i.tips !== 'string') return 'tips must be a string'
+  return null
+}
 
 export async function generateMeal(
-  apiKey: string,
+  client: Anthropic,
   model: string,
   req: MealRequest,
   wares: Ware[],
   onEvent: (e: AgentEvent) => void,
   signal?: AbortSignal,
 ): Promise<Recipe> {
-  const usable = wares.filter((w) => w.status !== 'out')
-  const have = usable.filter((w) => w.list === 'have')
-  const buy = usable.filter((w) => w.list === 'buy')
+  const { have, buy } = partitionWares(wares)
   const limit = BUY_LIMITS[req.willingness]
   const allowed = new Map((limit > 0 ? [...have, ...buy] : have).map((w) => [w.id, w]))
   if (have.length === 0 && (limit === 0 || buy.length === 0)) {
     throw new Error('No usable wares. Add some to your "Have" list (or allow buying) first.')
   }
 
-  const client = makeClient(apiKey)
-  const { system, user } = buildPrompt(req, have, buy)
+  const { system, user } = buildPrompt(req, have, buy, limit)
   const messages: BetaMessageParam[] = [{ role: 'user', content: user }]
   const solutions = new Map<string, Solution>()
   let counter = 0
@@ -272,10 +311,13 @@ export async function generateMeal(
     const requests: PortionRequest[] = []
     const seen = new Set<string>()
     for (const ing of input.ingredients) {
+      if (!ing || typeof ing !== 'object' || typeof ing.ware_id !== 'string') {
+        return { content: 'Each ingredient must be an object with a string ware_id', isError: true }
+      }
       const w = allowed.get(ing.ware_id)
       if (!w) return { content: `Unknown or not allowed ware_id: ${ing.ware_id}`, isError: true }
       if (seen.has(w.id)) return { content: `Duplicate ware_id: ${w.id}`, isError: true }
-      if (!isNum(ing.min_grams) || !isNum(ing.max_grams) || !isNum(ing.fixed_grams)) {
+      if (!optionalGrams(ing.min_grams) || !optionalGrams(ing.max_grams) || !optionalGrams(ing.fixed_grams)) {
         return { content: `Bounds for ${w.id} must be non-negative numbers`, isError: true }
       }
       seen.add(w.id)
@@ -345,10 +387,11 @@ export async function generateMeal(
         if (r.isError) onEvent({ kind: 'rejected', reason: r.content })
         results.push({ type: 'tool_result', tool_use_id: tu.id, content: r.content, is_error: r.isError })
       } else if (tu.name === 'submit_recipe') {
+        const problem = submitProblem(tu.input)
         const input = tu.input as SubmitInput
-        const sol = input && solutions.get(input.solution_id)
-        if (!sol || !Array.isArray(input.steps) || !input.title) {
-          const reason = !sol ? `Unknown solution_id: ${input?.solution_id}` : 'title and steps are required'
+        const sol = problem ? undefined : solutions.get(input.solution_id)
+        if (!sol) {
+          const reason = problem ?? `Unknown solution_id: ${input.solution_id}`
           onEvent({ kind: 'rejected', reason })
           results.push({ type: 'tool_result', tool_use_id: tu.id, content: reason, is_error: true })
           continue
@@ -356,10 +399,10 @@ export async function generateMeal(
         const kept = sol.portions.filter((p) => p.grams > 0)
         return {
           id: crypto.randomUUID(),
-          title: input.title,
-          summary: input.summary ?? '',
+          title: input.title.trim(),
+          summary: input.summary,
           ingredients: kept.map((p) => ({ wareId: p.ware.id, name: p.ware.name, grams: p.grams, fromBuyList: p.ware.list === 'buy' })),
-          extras: Array.isArray(input.extras) ? input.extras : [],
+          extras: input.extras,
           steps: input.steps,
           tips: input.tips,
           totals: sol.totals,

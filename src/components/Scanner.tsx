@@ -1,6 +1,6 @@
 import { BrowserMultiFormatReader, type IScannerControls } from '@zxing/browser'
 import { useEffect, useRef, useState } from 'react'
-import { describeError, readNutritionLabel } from '../claude'
+import { describeError, makeClient, readNutritionLabel } from '../claude'
 import { lookupBarcode } from '../openfoodfacts'
 import { useStore } from '../store'
 import type { WareDraft } from './WareEditor'
@@ -10,7 +10,7 @@ interface Props {
   onCancel: () => void
 }
 
-type Phase = 'scanning' | 'looking' | 'notfound' | 'reading'
+type Phase = 'scanning' | 'looking' | 'notfound' | 'reading' | 'duplicate'
 
 /** Downscale a photo to keep the upload small; returns base64 JPEG without the data: prefix. */
 async function toJpegBase64(file: File, maxSide = 1600): Promise<string> {
@@ -26,24 +26,38 @@ async function toJpegBase64(file: File, maxSide = 1600): Promise<string> {
 export function Scanner({ onResult, onCancel }: Props) {
   const { state } = useStore()
   const videoRef = useRef<HTMLVideoElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
   const controlsRef = useRef<IScannerControls | null>(null)
+  // Aborted on unmount, so a lookup or label read that finishes after Cancel
+  // neither reopens the editor nor keeps a Claude request running.
+  const abortRef = useRef(new AbortController())
   const [phase, setPhase] = useState<Phase>('scanning')
   const [barcode, setBarcode] = useState('')
   const [manual, setManual] = useState('')
   const [error, setError] = useState('')
   const [cameraError, setCameraError] = useState('')
 
+  useEffect(() => {
+    const ac = abortRef.current
+    return () => ac.abort()
+  }, [])
+
   const handleCode = async (code: string) => {
     controlsRef.current?.stop()
+    const signal = abortRef.current.signal
+    const existing = state.wares.find((w) => w.barcode === code)
+    if (existing) {
+      setBarcode(code)
+      setError(`You already have "${existing.name}" with barcode ${code}. Edit it in the list instead.`)
+      setPhase('duplicate')
+      return
+    }
     setBarcode(code)
     setPhase('looking')
     setError('')
-    const existing = state.wares.find((w) => w.barcode === code)
-    if (existing) {
-      setError(`You already have "${existing.name}" with this barcode.`)
-    }
     try {
-      const p = await lookupBarcode(code)
+      const p = await lookupBarcode(code, signal)
+      if (signal.aborted) return
       if (p) {
         onResult(
           { name: p.name, brand: p.brand ?? '', barcode: p.barcode, source: 'openfoodfacts', per100: p.per100, list: 'have', status: 'available' },
@@ -55,33 +69,40 @@ export function Scanner({ onResult, onCancel }: Props) {
       }
       setPhase('notfound')
     } catch (e) {
+      if (signal.aborted) return
       setError(`Lookup failed: ${describeError(e)}`)
       setPhase('notfound')
     }
   }
 
+  // The camera starts when scanning begins and stops when it ends; handleCode is
+  // read through a ref so a re-render does not restart the camera.
+  const handleCodeRef = useRef(handleCode)
+  useEffect(() => {
+    handleCodeRef.current = handleCode
+  })
+
   useEffect(() => {
     if (phase !== 'scanning') return
     const reader = new BrowserMultiFormatReader()
-    let cancelled = false
+    let done = false
     reader
       .decodeFromConstraints({ video: { facingMode: 'environment' } }, videoRef.current!, (result, _err, controls) => {
         controlsRef.current = controls
-        if (result && !cancelled) {
-          cancelled = true
-          handleCode(result.getText())
+        if (result && !done) {
+          done = true
+          handleCodeRef.current(result.getText())
         }
       })
       .then((controls) => {
         controlsRef.current = controls
-        if (cancelled) controls.stop()
+        if (done) controls.stop()
       })
       .catch((e) => setCameraError(`Camera unavailable: ${e instanceof Error ? e.message : e}. Type the barcode instead.`))
     return () => {
-      cancelled = true
+      done = true
       controlsRef.current?.stop()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
 
   const onPhoto = async (file: File) => {
@@ -89,11 +110,13 @@ export function Scanner({ onResult, onCancel }: Props) {
       setError('Add your Claude API key in Settings to read labels.')
       return
     }
+    const signal = abortRef.current.signal
     setPhase('reading')
     setError('')
     try {
       const data = await toJpegBase64(file)
-      const r = await readNutritionLabel(state.settings.apiKey, state.settings.model, data, 'image/jpeg')
+      const r = await readNutritionLabel(makeClient(state.settings.apiKey), state.settings.model, data, 'image/jpeg', signal)
+      if (signal.aborted) return
       if (!r.readable) {
         setError('Claude could not find a nutrition table in that photo. Try again closer and in good light.')
         setPhase('notfound')
@@ -104,6 +127,7 @@ export function Scanner({ onResult, onCancel }: Props) {
         `Read from your photo by Claude. ${r.basis_note} Please confirm or correct every number before saving.`,
       )
     } catch (e) {
+      if (signal.aborted) return
       setError(describeError(e))
       setPhase('notfound')
     }
@@ -111,12 +135,17 @@ export function Scanner({ onResult, onCancel }: Props) {
 
   return (
     <div className="card">
-      <h2>Scan a product</h2>
+      <h2>Scan a ware</h2>
       {phase === 'scanning' && (
         <>
-          {!cameraError && <video ref={videoRef} className="scanner-video" muted playsInline />}
-          {cameraError && <p className="banner">{cameraError}</p>}
-          <p className="hint">Point the camera at the barcode.</p>
+          {cameraError ? (
+            <p className="banner">{cameraError}</p>
+          ) : (
+            <>
+              <video ref={videoRef} className="scanner-video" muted playsInline />
+              <p className="hint">Point the camera at the barcode.</p>
+            </>
+          )}
           <form
             className="row"
             onSubmit={(e) => {
@@ -131,24 +160,46 @@ export function Scanner({ onResult, onCancel }: Props) {
           </form>
         </>
       )}
-      {phase === 'looking' && <p>Looking up {barcode} in Open Food Facts…</p>}
-      {phase === 'reading' && <p>Claude is reading the label…</p>}
+      {phase === 'looking' && <p role="status">Looking up {barcode} in Open Food Facts…</p>}
+      {phase === 'reading' && <p role="status">Claude is reading the label…</p>}
       {phase === 'notfound' && (
         <>
           <p>
             {barcode ? `Barcode ${barcode} was not found in Open Food Facts.` : 'No barcode.'} Take a photo of the nutrition label
             and Claude will read the values for you to check.
           </p>
-          <label className="button">
-            Photograph label
-            <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => e.target.files?.[0] && onPhoto(e.target.files[0])} />
-          </label>
-          <button type="button" className="secondary" onClick={() => setPhase('scanning')}>
-            Scan again
-          </button>
+          <div className="row">
+            <button type="button" onClick={() => fileRef.current?.click()}>
+              Photograph label
+            </button>
+            <button type="button" className="secondary" onClick={() => setPhase('scanning')}>
+              Scan again
+            </button>
+          </div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) onPhoto(f)
+              e.target.value = ''
+            }}
+          />
         </>
       )}
-      {error && <p className="error">{error}</p>}
+      {phase === 'duplicate' && (
+        <button type="button" className="secondary" onClick={() => setPhase('scanning')}>
+          Scan another
+        </button>
+      )}
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
       <div className="row">
         <button type="button" className="secondary" onClick={onCancel}>
           Cancel

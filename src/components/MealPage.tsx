@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AgentEvent, BuyWillingness } from '../claude'
 import { useStore } from '../store'
-import { MACRO_KEYS, type Macros, type Recipe } from '../types'
+import { MACRO_KEYS, type Macros, partitionWares, type Recipe, roundMacro } from '../types'
 import { MacroInputs, MacroSummary } from './MacroInputs'
 import { RecipeView } from './RecipeView'
 
@@ -11,8 +11,7 @@ const SHARES = [
   { label: '½', value: 0.5 },
 ]
 
-const scale = (m: Macros, f: number): Macros =>
-  Object.fromEntries(MACRO_KEYS.map((k) => [k, Math.round(m[k] * f * (k === 'kcal' ? 1 : 10)) / (k === 'kcal' ? 1 : 10)])) as Macros
+const scale = (m: Macros, f: number): Macros => Object.fromEntries(MACRO_KEYS.map((k) => [k, roundMacro(k, m[k] * f)])) as Macros
 
 export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void; goToWares: () => void }) {
   const { state, update } = useStore()
@@ -24,7 +23,7 @@ export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void
   const [running, setRunning] = useState(false)
   const [events, setEvents] = useState<AgentEvent[]>([])
   const [recipe, setRecipe] = useState<Recipe | null>(null)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<{ message: string; fixInSettings: boolean } | null>(null)
   const [saved, setSaved] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -44,9 +43,9 @@ export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void
     )
   }
 
-  const usable = state.wares.filter((w) => w.status !== 'out')
-  const haveCount = usable.filter((w) => w.list === 'have').length
-  const buyCount = usable.filter((w) => w.list === 'buy').length
+  const { have, buy } = partitionWares(state.wares)
+  const haveCount = have.length
+  const buyCount = buy.length
 
   const pickShare = (v: number) => {
     setShare(v)
@@ -60,13 +59,13 @@ export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void
     setRunning(true)
     setEvents([])
     setRecipe(null)
-    setError('')
+    setError(null)
     setSaved(false)
     // The Claude SDK is loaded on first use to keep the initial download small.
-    const { describeError, generateMeal } = await import('../claude')
+    const { describeError, generateMeal, isKeyError, makeClient } = await import('../claude')
     try {
       const r = await generateMeal(
-        state.settings.apiKey,
+        makeClient(state.settings.apiKey),
         state.settings.model,
         { target, willingness, wish },
         state.wares,
@@ -75,7 +74,7 @@ export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void
       )
       setRecipe(r)
     } catch (e) {
-      if (!ac.signal.aborted) setError(describeError(e))
+      if (!ac.signal.aborted) setError({ message: describeError(e), fixInSettings: isKeyError(e) })
     } finally {
       setRunning(false)
     }
@@ -100,7 +99,7 @@ export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void
           <span>Buying extra wares</span>
           <select value={willingness} onChange={(e) => setWillingness(e.target.value as BuyWillingness)}>
             <option value="none">Only what I have</option>
-            <option value="some">A couple of things is fine</option>
+            <option value="some">A couple of wares is fine</option>
             <option value="happy">Happy to shop</option>
           </select>
         </label>
@@ -145,7 +144,16 @@ export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void
         </section>
       )}
 
-      {error && <p className="error card">{error}</p>}
+      {error && (
+        <div className="error card" role="alert">
+          <p>{error.message}</p>
+          {error.fixInSettings && (
+            <button type="button" className="secondary" onClick={goToSettings}>
+              Open settings
+            </button>
+          )}
+        </div>
+      )}
 
       {recipe && (
         <section className="card">
