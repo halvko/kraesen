@@ -26,7 +26,7 @@ export function FoodRow({ food, onOpen }: { food: Ware; onOpen?: () => void }) {
       ) : (
         <div className="ware-main">{label}</div>
       )}
-      <StockControl name={food.name} value={food.stock} onChange={setStock} />
+      <StockControl id={food.id} name={food.name} value={food.stock} onChange={setStock} />
     </li>
   )
 }
