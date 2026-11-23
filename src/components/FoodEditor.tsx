@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import type { ErrorInfo } from '../claude'
 import { useStore } from '../store'
 import { addLookups, findLookup, type FoodLookup, type Macros, normalizeQuery, sameMacros, type SourceRef, type Stock, STOCK_HINT, STOCK_LABEL, STOCKS, type Ware } from '../types'
 import { MacroInputs } from './MacroInputs'
+import { ClaudeError } from './ClaudeError'
 import { KeyForm } from './ProfileForms'
 import { Sheet } from './Sheet'
 
@@ -58,7 +60,7 @@ type LookupState =
   | { kind: 'idle' }
   | { kind: 'busy' }
   | { kind: 'done'; lookup: FoodLookup; cached: boolean }
-  | { kind: 'failed'; message: string; fixKey: boolean }
+  | ({ kind: 'failed' } & ErrorInfo)
 
 /**
  * Looks up macros per 100 g for a name with Claude and web search, and keeps every result so the
@@ -127,6 +129,12 @@ export function FoodEditor({ initial, title, banner, onSave, onCancel, onDelete 
   const lookup = useMacroLookup(d.name, (l) => setD((cur) => ({ ...cur, per100: l.per100, source: 'lookup', sourceRef: l.source })))
   const [keySheet, setKeySheet] = useState(false)
   const lookupButton = useRef<HTMLButtonElement>(null)
+  // After a new key is saved: the old error no longer applies, and focus goes to the button that uses the key.
+  const afterKeySaved = () => {
+    setKeySheet(false)
+    lookup.cancel()
+    requestAnimationFrame(() => lookupButton.current?.focus())
+  }
   // Scanned products have their own label; the lookup is for foods without one.
   const canLookUp = d.source === 'custom' || d.source === 'lookup'
   const busy = lookup.st.kind === 'busy'
@@ -190,16 +198,7 @@ export function FoodEditor({ initial, title, banner, onSave, onCancel, onDelete 
               Claude is searching food databases… this can take up to a minute.
             </p>
           )}
-          {lookup.st.kind === 'failed' && (
-            <div className="error" role="alert">
-              <p>{lookup.st.message}</p>
-              {lookup.st.fixKey && (
-                <button type="button" className="secondary" onClick={() => setKeySheet(true)}>
-                  Fix the key
-                </button>
-              )}
-            </div>
-          )}
+          {lookup.st.kind === 'failed' && <ClaudeError error={lookup.st} onKeySaved={afterKeySaved} />}
           {lookup.st.kind === 'done' && (
             <p className="banner">
               {lookup.st.cached
@@ -223,7 +222,7 @@ export function FoodEditor({ initial, title, banner, onSave, onCancel, onDelete 
       {d.sourceRef && <SourceLine source={d.sourceRef} />}
       {keySheet && (
         <Sheet title="Claude API key" onClose={() => setKeySheet(false)}>
-          <KeyForm onSaved={() => setKeySheet(false)} />
+          <KeyForm onSaved={afterKeySaved} />
         </Sheet>
       )}
       <fieldset className="stock-options">

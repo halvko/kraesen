@@ -289,26 +289,36 @@ export const atwaterKcal = (m: { protein: number; carbs: number; fat: number; fi
   4 * m.protein + 4 * m.carbs + 9 * m.fat + 2 * m.fibre + 7 * m.alcohol
 
 /**
- * Reads submit_macros input into a lookup, or says what was wrong. Numbers that cannot be right
- * (more than 100 g per 100 g, or energy that does not fit the macros, such as kJ given as kcal)
- * go back to Claude. The source URL is kept only when Claude saw it during this lookup, so a
- * made-up link is never shown as the source.
+ * Reads submit_macros input into a lookup, or says what was wrong. Macros over 100 g per 100 g go
+ * back to Claude; energy that does not fit the macros (such as kJ given as kcal) goes back once,
+ * and energyQueried remembers which numbers were questioned. The source URL is kept only when
+ * Claude saw it during this lookup, so a made-up link is never shown as the source.
  */
-export function parseEstimate(input: unknown, query: string, urls: Set<string>, now = Date.now()): Parsed<MacroEstimate> {
+export function parseEstimate(
+  input: unknown,
+  query: string,
+  urls: Set<string>,
+  energyQueried: Set<string> = new Set(),
+  now = Date.now(),
+): Parsed<MacroEstimate> {
   if (!isObj(input)) return fail('submit_macros input must be an object')
   if (input.found !== true) return { ok: true, value: { found: false } }
   const [protein, carbs, fat, fibre, alcohol, kcal] = [input.protein_g, input.carbs_g, input.fat_g, input.fibre_g, input.alcohol_g, input.kcal].map(
-    (v) => toNonNegative(v ?? 0),
+    toNonNegative,
   )
   if (protein === undefined || carbs === undefined || fat === undefined || fibre === undefined || alcohol === undefined || kcal === undefined) {
     return fail('All numbers must be non-negative')
   }
   if (protein + carbs + fat + fibre + alcohol > 100.5) return fail('The macros add up to more than 100 g per 100 g. Check the numbers.')
   const expected = atwaterKcal({ protein, carbs, fat, fibre, alcohol })
-  if (Math.abs(kcal - expected) > Math.max(15, 0.2 * expected)) {
+  // Some foods are right and still don't fit (polyols, erythritol): the same numbers sent again are accepted.
+  const numbers = JSON.stringify([protein, carbs, fat, fibre, alcohol, kcal])
+  if (Math.abs(kcal - expected) > Math.max(15, 0.2 * expected) && !energyQueried.has(numbers)) {
+    energyQueried.add(numbers)
     return fail(
       `kcal ${kcal} does not fit the macros, which give about ${Math.round(expected)} kcal. ` +
-        'Check that kcal is not kJ, and that fibre and alcohol are filled in, then submit again.',
+        'Check that kcal is not kJ, and that fibre and alcohol are filled in. If these are the numbers the ' +
+        'source gives (for example for polyols), submit them again unchanged.',
     )
   }
   const name = typeof input.source_name === 'string' ? input.source_name.trim() : ''
@@ -330,6 +340,7 @@ export function parseEstimate(input: unknown, query: string, urls: Set<string>, 
 /** Looks up the macros per 100 g of any food with Claude and web search. The caller caches the result. */
 export function estimateMacros(client: Anthropic, query: string, signal?: AbortSignal): Promise<MacroEstimate> {
   const seen = new Set<string>()
+  const energyQueried = new Set<string>()
   return runToolLoop<MacroEstimate>(client, {
     system: LOOKUP_SYSTEM,
     tools: [
@@ -346,7 +357,7 @@ export function estimateMacros(client: Anthropic, query: string, signal?: AbortS
     onResponse: (content) => seenUrls(content).forEach((u) => seen.add(u)),
     handle: (tu) => {
       if (tu.name !== 'submit_macros') return { result: `Unknown tool ${tu.name}`, isError: true }
-      const parsed = parseEstimate(tu.input, query, seen)
+      const parsed = parseEstimate(tu.input, query, seen, energyQueried)
       return parsed.ok ? { done: parsed.value } : { result: parsed.error, isError: true }
     },
     signal,

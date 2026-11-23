@@ -70,8 +70,7 @@ function readLookup(v: unknown): FoodLookup | null {
 
 /** Stored lookups, re-keyed from their query; for a name that repeats, the first one wins. */
 function readLookups(v: unknown): FoodLookup[] {
-  const read = (Array.isArray(v) ? v : []).map(readLookup).filter((l): l is FoodLookup => l !== null)
-  return read.reduceRight<FoodLookup[]>((acc, l) => addLookups(acc, [l]), [])
+  return addLookups([], (Array.isArray(v) ? v : []).map(readLookup).filter((l): l is FoodLookup => l !== null))
 }
 
 function readWare(v: unknown, fromV1: boolean): Ware | null {

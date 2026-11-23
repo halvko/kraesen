@@ -306,7 +306,7 @@ describe('macro lookup', () => {
     ...over,
   })
   const submit = (over: Record<string, unknown> = {}, id = 'u1') => ({ type: 'tool_use', id, name: 'submit_macros', input: input(over) }) as Block
-  const parse = (over: Record<string, unknown> = {}, urls: string[] = [FRIDA]) => parseEstimate(input(over), 'tomat', new Set(urls), 1)
+  const parse = (over: Record<string, unknown> = {}, urls: string[] = [FRIDA]) => parseEstimate(input(over), 'tomat', new Set(urls), new Set(), 1)
   const lookupOf = (r: ReturnType<typeof parse>) => (r.ok && r.value.found ? r.value.lookup : undefined)
   const errorOf = (r: ReturnType<typeof parse>) => (r.ok ? undefined : r.error)
 
@@ -334,6 +334,19 @@ describe('macro lookup', () => {
   it('rejects energy that does not fit the macros, such as kJ given as kcal', () => {
     expect(errorOf(parse({ kcal: 77 }))).toMatch(/does not fit/)
     expect(errorOf(parse({ protein_g: 20, kcal: 0 }))).toMatch(/does not fit/)
+  })
+
+  it('accepts energy that does not fit when Claude sends the same numbers again', () => {
+    // Xylitol: 100 g carbohydrate (polyols) and 240 kcal.
+    const xylitol = { protein_g: 0, carbs_g: 100, fat_g: 0, fibre_g: 0, kcal: 240 }
+    const queried = new Set<string>()
+    expect(parseEstimate(input(xylitol), 'xylitol', new Set(), queried).ok).toBe(false)
+    expect(parseEstimate(input({ ...xylitol, kcal: 250 }), 'xylitol', new Set(), queried).ok).toBe(false)
+    expect(parseEstimate(input(xylitol), 'xylitol', new Set(), queried).ok).toBe(true)
+  })
+
+  it('rejects a missing number instead of reading it as 0', () => {
+    expect(errorOf(parse({ fibre_g: undefined }))).toMatch(/non-negative/)
   })
 
   it('counts alcohol and fibre towards energy', () => {

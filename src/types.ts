@@ -76,10 +76,10 @@ export const findLookup = (lookups: FoodLookup[], query: string): FoodLookup | u
   return lookups.find((l) => l.key === key)
 }
 
-/** The lookups with these added in front, replacing any older ones for the same name. */
+/** The added lookups in front of the others, one per name: for a name that repeats, the first one wins. */
 export function addLookups(lookups: FoodLookup[], added: FoodLookup[]): FoodLookup[] {
-  const keys = new Set(added.map((l) => l.key))
-  return [...added, ...lookups.filter((l) => !keys.has(l.key))]
+  const seen = new Set<string>()
+  return [...added, ...lookups].filter((l) => !seen.has(l.key) && !!seen.add(l.key))
 }
 
 /** True for an absolute http(s) link: the only kind the app shows or stores. */
