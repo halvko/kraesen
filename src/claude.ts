@@ -11,7 +11,7 @@ import { type PortionRequest, type Solution, solvePortions } from './solver'
 import { isObj, MACRO_KEYS, type MealFoods, mealFoods, type Macros, type Recipe, roundMacro, roundMacros, SHOP_LIMITS, type Shopping, toNonNegative, type Ware } from './types'
 
 /** Every Claude call uses this model. */
-const MODEL = 'claude-sonnet-5-5'
+const MODEL = { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }
 
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 
@@ -30,7 +30,7 @@ export interface ErrorInfo {
 export function describeError(e: unknown): ErrorInfo {
   const info = (message: string, fixKey = false) => ({ message, fixKey })
   if (e instanceof Anthropic.AuthenticationError) return info('The API key was rejected.', true)
-  if (e instanceof Anthropic.PermissionDeniedError) return info('This API key is not allowed to use Claude Sonnet 5.5.', true)
+  if (e instanceof Anthropic.PermissionDeniedError) return info(`This API key is not allowed to use ${MODEL.label}.`, true)
   if (e instanceof Anthropic.RateLimitError) return info('Rate limited by the Claude API. Wait a minute and try again.')
   if (e instanceof Anthropic.APIConnectionError) return info('Could not reach the Claude API. Are you online?')
   if (e instanceof Anthropic.APIError) return info(`Claude API error ${e.status ?? ''}: ${e.message}`)
@@ -40,7 +40,7 @@ export function describeError(e: unknown): ErrorInfo {
 /** Sends a one-token request with this key. Throws when the key is rejected or the API cannot be reached. */
 export async function checkKey(apiKey: string): Promise<void> {
   await makeClient(apiKey).beta.messages.create({
-    model: MODEL,
+    model: MODEL.id,
     max_tokens: 1,
     betas: [FALLBACK_BETA],
     fallbacks: 'default',
@@ -119,7 +119,7 @@ export async function readNutritionLabel(
 ): Promise<LabelReading> {
   const msg = await client.beta.messages.create(
     {
-      model: MODEL,
+      model: MODEL.id,
       max_tokens: 4000,
       betas: [FALLBACK_BETA],
       fallbacks: 'default',
@@ -438,7 +438,7 @@ export async function generateMeal(
     if (signal?.aborted) throw new Error('Cancelled')
     const response = await client.beta.messages.create(
       {
-        model: MODEL,
+        model: MODEL.id,
         max_tokens: 16000,
         betas: [FALLBACK_BETA],
         fallbacks: 'default',

@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { BetaMessage, BetaMessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages'
-import { describe, expect, it } from 'vitest'
-import { type AgentEvent, describeError, generateMeal, type MealRequest, parseLabelReply } from './claude'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { type AgentEvent, checkKey, describeError, generateMeal, type MealRequest, parseLabelReply, readNutritionLabel } from './claude'
 import type { Ware } from './types'
 
 const ware = (id: string, stock: Ware['stock']): Ware => ({
@@ -36,14 +36,16 @@ const recipe = (solution_id: string) => ({
   steps: ['Cook.'],
 })
 
-/** A client whose replies are scripted; records every request's messages. */
+/** A client whose replies are scripted; records every request's messages and model. */
 function scripted(replies: BetaMessage[]) {
   const requests: BetaMessageParam[][] = []
+  const models: string[] = []
   const client = {
     beta: {
       messages: {
-        create: async (params: { messages: BetaMessageParam[] }) => {
+        create: async (params: { messages: BetaMessageParam[]; model: string }) => {
           requests.push(structuredClone(params.messages))
+          models.push(params.model)
           const next = replies.shift()
           if (!next) throw new Error('script ran out')
           return next
@@ -51,7 +53,7 @@ function scripted(replies: BetaMessage[]) {
       },
     },
   } as unknown as Anthropic
-  return { client, requests }
+  return { client, requests, models }
 }
 
 /** The tool_result blocks the app sent in its last request. */
@@ -204,6 +206,36 @@ describe('generateMeal', () => {
   it('stops on a refusal', async () => {
     const { client } = scripted([reply([], 'refusal')])
     await expect(run(client)).rejects.toThrow('declined')
+  })
+})
+
+describe('model', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('plans meals with Claude Sonnet 5.5 on every request', async () => {
+    const { client, models } = scripted([
+      reply([{ type: 'tool_use', id: 'a', name: 'compute_portions', input: { ingredients: [{ ware_id: 'have1' }] } }]),
+      reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: recipe('S1') }]),
+    ])
+    await run(client)
+    expect(models).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5'])
+  })
+
+  it('reads labels with Claude Sonnet 5.5', async () => {
+    const label = { readable: true, name: 'Skyr', brand: 'Arla', protein_g: 11, carbs_g: 4, fat_g: 0.2, kcal: 63, basis_note: '' }
+    const { client, models } = scripted([reply([{ type: 'text', text: JSON.stringify(label) }], 'end_turn')])
+    await readNutritionLabel(client, 'aGk=', 'image/jpeg')
+    expect(models).toEqual(['claude-sonnet-5-5'])
+  })
+
+  it('checks the key against Claude Sonnet 5.5', async () => {
+    const bodies: { model: string }[] = []
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)))
+      return new Response(JSON.stringify(reply([{ type: 'text', text: 'Hi' }], 'end_turn')), { headers: { 'content-type': 'application/json' } })
+    })
+    await checkKey('sk-ant-test')
+    expect(bodies.map((b) => b.model)).toEqual(['claude-sonnet-5-5'])
   })
 })
 
