@@ -161,3 +161,27 @@ describe('normalize', () => {
     expect(p?.staples).toEqual(['Salt', 'cumin'])
   })
 })
+
+describe('macro lookups', () => {
+  const lookup = (query: string, url = 'https://frida.fooddata.dk/food/1') => ({
+    key: 'ignored',
+    query,
+    name: 'Tomater',
+    per100: { protein: 0.7, carbs: 2.9, fat: 0.2, kcal: 18 },
+    source: { name: 'Frida', url },
+    note: '',
+    createdAt: 1,
+  })
+
+  it('re-keys lookups by the normalized query, drops repeats, and drops links that are not http(s)', () => {
+    const s = normalize({ version: 2, wares: [], lookups: [lookup('Tomater!'), lookup(' tomater '), lookup('Kål', 'javascript:alert(1)')] })
+    expect(s.lookups.map((l) => l.key)).toEqual(['tomater', 'kål'])
+    expect(s.lookups[1].source).toEqual({ name: 'Frida' })
+  })
+
+  it('exports lookups and keeps this device’s lookups on import', () => {
+    const mine = { ...emptyState(), lookups: normalize({ lookups: [lookup('rugbrød')] }).lookups }
+    const text = exportJson({ ...sample(), lookups: normalize({ lookups: [lookup('tomater')] }).lookups })
+    expect(importJson(text, mine).lookups.map((l) => l.key)).toEqual(['tomater', 'rugbrød'])
+  })
+})

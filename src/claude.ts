@@ -8,7 +8,7 @@ import type {
   BetaToolUseBlock,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { type PortionRequest, type Solution, solvePortions } from './solver'
-import { isObj, MACRO_KEYS, type MealFoods, mealFoods, type Macros, type Recipe, roundMacro, roundMacros, SHOP_LIMITS, type Shopping, toNonNegative, type Ware } from './types'
+import { type FoodLookup, isObj, MACRO_KEYS, normalizeQuery, type SourceRef, type MealFoods, mealFoods, type Macros, type Recipe, roundMacro, roundMacros, SHOP_LIMITS, type Shopping, toNonNegative, type Ware } from './types'
 
 /** Every Claude call uses this model. */
 const MODEL = { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }
@@ -144,6 +144,166 @@ export async function readNutritionLabel(
     { signal },
   )
   return parseLabelReply(msg)
+}
+
+// ---------------------------------------------------------------------------
+// Macro lookup for any food, with web search
+// ---------------------------------------------------------------------------
+
+const ESTIMATE_TOOL: BetaTool = {
+  name: 'submit_macros',
+  description:
+    'Submit the macronutrients per 100 g for the food, with the source they came from. Call this exactly once, ' +
+    'after searching. If the text is not a food, set found to false and use 0 for the numbers.',
+  strict: true,
+  input_schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['found', 'name', 'protein_g', 'carbs_g', 'fat_g', 'kcal', 'source_name', 'source_url', 'note'],
+    properties: {
+      found: { type: 'boolean', description: 'False if the text does not describe a food or drink.' },
+      name: { type: 'string', description: 'A short, plain name for the food in the language the user wrote, e.g. "Tomater".' },
+      protein_g: { type: 'number', description: 'Protein per 100 g.' },
+      carbs_g: { type: 'number', description: 'Available carbohydrate per 100 g, fibre NOT included.' },
+      fat_g: { type: 'number', description: 'Total fat per 100 g.' },
+      kcal: { type: 'number', description: 'Energy in kcal per 100 g.' },
+      source_name: {
+        type: 'string',
+        description: 'The database or site and the entry used, e.g. "Frida (DTU Fødevareinstituttet): Tomat, rå".',
+      },
+      source_url: { type: 'string', description: 'The URL of the page the numbers came from, exactly as found; empty if none.' },
+      note: {
+        type: 'string',
+        description: 'One short English sentence on what was assumed, e.g. "Raw, edible part; fibre subtracted from USDA total carbohydrate".',
+      },
+    },
+  },
+}
+
+export const LOOKUP_SYSTEM =
+  'You look up the macronutrients per 100 g of a food for a meal-planning app. The user writes in Danish or English, ' +
+  'often briefly ("hjemmedyrkede tomater", "rugbrød", "frozen peas").\n\n' +
+  'Use web search to find the numbers in a food composition database; do not answer from memory alone. Prefer, in order:\n' +
+  '1. Frida, the Danish food composition database (frida.fooddata.dk), from DTU Fødevareinstituttet.\n' +
+  '2. USDA FoodData Central (fdc.nal.usda.gov) or another national food composition database.\n' +
+  "3. For a branded product, the producer's own page or a shop page that shows the nutrition table.\n" +
+  'Use web fetch to read a promising page when the search result alone does not show the numbers.\n\n' +
+  'Rules:\n' +
+  '- Pick the entry closest to what the user wrote. Home-grown or organic produce uses the ordinary entry. Assume raw ' +
+  'and the edible part unless the text says cooked, dried, canned and so on.\n' +
+  '- Carbohydrate means available carbohydrate, without fibre. Frida and EU labels already give it that way. USDA ' +
+  '"Carbohydrate, by difference" includes fibre: subtract the fibre.\n' +
+  '- Energy in kcal; convert from kJ by dividing by 4.184 if only kJ is given.\n' +
+  '- Then call submit_macros once. source_url must be a page you actually saw in a search result or fetched.'
+
+export interface MacroEstimate {
+  found: boolean
+  lookup: FoodLookup
+}
+
+/** Every URL Claude saw in a search result or fetched while answering. */
+function seenUrls(content: BetaMessage['content'][]): Set<string> {
+  const urls = new Set<string>()
+  for (const blocks of content) {
+    for (const b of blocks) {
+      if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) b.content.forEach((r) => urls.add(r.url))
+      if (b.type === 'web_fetch_tool_result' && b.content.type === 'web_fetch_result') urls.add(b.content.url)
+    }
+  }
+  return urls
+}
+
+const sameUrl = (a: string, b: string) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '')
+
+/**
+ * Reads submit_macros input into a lookup, or says what was wrong. The source URL is kept only
+ * when Claude saw it during this lookup, so a made-up link is never shown as the source.
+ */
+export function parseEstimate(input: unknown, query: string, urls: Set<string>, now = Date.now()): Parsed<MacroEstimate> {
+  if (!isObj(input)) return fail('submit_macros input must be an object')
+  const found = input.found === true
+  const [protein, carbs, fat, kcal] = [input.protein_g, input.carbs_g, input.fat_g, input.kcal].map(toNonNegative)
+  if (protein === undefined || carbs === undefined || fat === undefined || kcal === undefined) {
+    return fail('protein_g, carbs_g, fat_g and kcal must be non-negative numbers')
+  }
+  if (found && protein + carbs + fat > 100.5) return fail('Protein, carbs and fat add up to more than 100 g per 100 g. Check the numbers.')
+  const sourceName = typeof input.source_name === 'string' ? input.source_name.trim() : ''
+  if (found && !sourceName) return fail('source_name must name where the numbers came from')
+  const rawUrl = typeof input.source_url === 'string' ? input.source_url.trim() : ''
+  const url = /^https?:\/\//i.test(rawUrl) && [...urls].some((u) => sameUrl(u, rawUrl)) ? rawUrl : undefined
+  const source: SourceRef = url ? { name: sourceName, url } : { name: sourceName || 'Claude' }
+  const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : query.trim()
+  return {
+    ok: true,
+    value: {
+      found,
+      lookup: {
+        key: normalizeQuery(query),
+        query: query.trim(),
+        name,
+        per100: roundMacros({ protein, carbs, fat, kcal }),
+        source,
+        note: typeof input.note === 'string' ? input.note.trim() : '',
+        createdAt: now,
+      },
+    },
+  }
+}
+
+/** Looks up the macros per 100 g of any food with Claude and web search. The caller caches the result. */
+export async function estimateMacros(client: Anthropic, query: string, signal?: AbortSignal): Promise<MacroEstimate> {
+  const messages: BetaMessageParam[] = [{ role: 'user', content: `Food: ${query.trim()}` }]
+  const contents: BetaMessage['content'][] = []
+  for (let turn = 0; turn < 8; turn++) {
+    if (signal?.aborted) throw new Error('Cancelled')
+    const response = await client.beta.messages.create(
+      {
+        model: MODEL.id,
+        max_tokens: 16000,
+        betas: [FALLBACK_BETA],
+        fallbacks: 'default',
+        output_config: { effort: 'medium' },
+        system: LOOKUP_SYSTEM,
+        tools: [
+          { type: 'web_search_20260209', name: 'web_search', max_uses: 5 },
+          { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 },
+          ESTIMATE_TOOL,
+        ],
+        messages,
+      },
+      { signal },
+    )
+    if (response.stop_reason === 'refusal') throw new Error('Claude declined to look this up.')
+    if (response.stop_reason === 'max_tokens') throw new Error('The lookup was cut off. Please try again.')
+    contents.push(response.content)
+    messages.push({ role: 'assistant', content: response.content as BetaContentBlockParam[] })
+    // The server's search loop paused; sending the conversation back resumes it.
+    if (response.stop_reason === 'pause_turn') continue
+
+    const submit = response.content.find((b): b is BetaToolUseBlock => b.type === 'tool_use' && b.name === 'submit_macros')
+    const others = response.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use' && b.name !== 'submit_macros')
+    if (!submit) {
+      if (others.length === 0) {
+        messages.push({ role: 'user', content: 'Please finish by calling submit_macros.' })
+      } else {
+        messages.push({
+          role: 'user',
+          content: others.map((tu) => ({ type: 'tool_result' as const, tool_use_id: tu.id, content: `Unknown tool ${tu.name}`, is_error: true })),
+        })
+      }
+      continue
+    }
+    const parsed = parseEstimate(submit.input, query, seenUrls(contents))
+    if (parsed.ok) return parsed.value
+    messages.push({
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: submit.id, content: parsed.error, is_error: true },
+        ...others.map((tu) => ({ type: 'tool_result' as const, tool_use_id: tu.id, content: `Unknown tool ${tu.name}`, is_error: true })),
+      ],
+    })
+  }
+  throw new Error('Claude did not finish the lookup. Please try again.')
 }
 
 // ---------------------------------------------------------------------------

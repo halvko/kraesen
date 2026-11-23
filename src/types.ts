@@ -38,7 +38,45 @@ export const STOCK_HINT: Record<Stock, string> = {
   off: 'Kept with its macros for later. Claude never sees it.',
 }
 
-export type WareSource = 'custom' | 'openfoodfacts' | 'label'
+export type WareSource = 'custom' | 'openfoodfacts' | 'label' | 'lookup'
+
+export const WARE_SOURCES: WareSource[] = ['custom', 'openfoodfacts', 'label', 'lookup']
+
+/** Where a food's macros came from, shown to the user. */
+export interface SourceRef {
+  /** E.g. "Frida (DTU Fødevareinstituttet): Tomat, rå". */
+  name: string
+  /** A page Claude actually read during the lookup; absent when it could not be checked. */
+  url?: string
+}
+
+/**
+ * One macro lookup by Claude, kept so the same food is never looked up twice. Keyed by
+ * the normalized query, and kept free of anything personal, so the list can later seed a
+ * shared list on a backend.
+ */
+export interface FoodLookup {
+  /** normalizeQuery(query). */
+  key: string
+  /** What the user typed, e.g. "hjemmedyrkede tomater". */
+  query: string
+  /** A short name for the food in the user's language, e.g. "Tomater". */
+  name: string
+  per100: Macros
+  source: SourceRef
+  /** One sentence on what was assumed, e.g. "Raw, edible part". */
+  note: string
+  createdAt: number
+}
+
+/** The cache key for a lookup: case, spacing and punctuation don't matter. */
+export function normalizeQuery(q: string): string {
+  return q
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}%]+/gu, ' ')
+    .trim()
+}
 
 export interface Ware {
   id: string
@@ -50,6 +88,8 @@ export interface Ware {
   per100: Macros
   stock: Stock
   notes?: string
+  /** Set for foods whose macros Claude looked up. */
+  ref?: SourceRef
   createdAt: number
 }
 
@@ -95,6 +135,8 @@ export interface AppState {
   settings: Settings
   wares: Ware[]
   recipes: Recipe[]
+  /** Every macro lookup so far, newest first. */
+  lookups: FoodLookup[]
   /** True after an upgrade from version 1, until the user dismisses the note about stock and staples. */
   upgradeNotice: boolean
 }
@@ -106,6 +148,7 @@ export const emptyState = (): AppState => ({
   settings: { apiKey: '', rulesAnswered: false },
   wares: [],
   recipes: [],
+  lookups: [],
   upgradeNotice: false,
 })
 

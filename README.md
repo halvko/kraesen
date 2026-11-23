@@ -20,8 +20,13 @@ console.anthropic.com (checked with a tiny request), and your first foods.
 - **Kitchen**: every food has one setting for where it is. **Home** (fridge,
   cupboard, garden), **Freezer**, **Shop** (not at home, but you would buy it)
   or **Not now** (kept with its macros; Claude never sees it), like garden
-  courgettes in winter. Home-grown produce is added by hand with its macros per
-  100 g. Packaged products can be scanned: the barcode is looked up in
+  courgettes in winter. For any food without a label, type its name (Danish or
+  English) and tap **Look up macros**: Claude searches food databases (Frida
+  first, then USDA and similar) with web search, fills in the macros per 100 g
+  and shows the source for you to check. Every lookup is kept on the device, so
+  the same name is never looked up twice. You can also type the macros yourself.
+  Web search must be allowed for the API key's organization in the Claude
+  Console, and costs a little per lookup. Packaged products can be scanned: the barcode is looked up in
   [Open Food Facts](https://world.openfoodfacts.org); if it is not there,
   photograph the nutrition label and Claude reads the values for you to confirm.
   **Staples** lists the seasonings Claude may add (salt, pepper, spices). With

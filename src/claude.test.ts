@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { BetaMessage, BetaMessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { type AgentEvent, checkKey, describeError, generateMeal, type MealRequest, parseLabelReply, readNutritionLabel } from './claude'
+import { type AgentEvent, checkKey, describeError, estimateMacros, generateMeal, type MealRequest, parseEstimate, parseLabelReply, readNutritionLabel } from './claude'
 import type { Ware } from './types'
 
 const ware = (id: string, stock: Ware['stock']): Ware => ({
@@ -285,3 +285,62 @@ describe('describeError', () => {
   })
 })
 
+
+describe('macro lookup', () => {
+  const searched = (url: string) =>
+    ({ type: 'web_search_tool_result', tool_use_id: 's1', content: [{ type: 'web_search_result', url, title: 'Tomat', encrypted_content: '', page_age: null }] }) as unknown as Block
+  const submit = (input: Record<string, unknown>) =>
+    ({
+      type: 'tool_use',
+      id: 'u1',
+      name: 'submit_macros',
+      input: {
+        found: true,
+        name: 'Tomater',
+        protein_g: 0.7,
+        carbs_g: 2.9,
+        fat_g: 0.2,
+        kcal: 18.4,
+        source_name: 'Frida: Tomat, rå',
+        source_url: 'https://frida.fooddata.dk/food/1',
+        note: 'Raw.',
+        ...input,
+      },
+    }) as Block
+
+  it('resumes a paused search, keeps a source URL Claude saw, and keys the result by the normalized name', async () => {
+    const { client, requests, models } = scripted([
+      reply([searched('https://frida.fooddata.dk/food/1')], 'pause_turn'),
+      reply([submit({})]),
+    ])
+    const r = await estimateMacros(client, '  Hjemmedyrkede   TOMATER ')
+    expect(r.found).toBe(true)
+    expect(r.lookup.key).toBe('hjemmedyrkede tomater')
+    expect(r.lookup.query).toBe('Hjemmedyrkede   TOMATER')
+    expect(r.lookup.per100).toEqual({ protein: 0.7, carbs: 2.9, fat: 0.2, kcal: 18 })
+    expect(r.lookup.source).toEqual({ name: 'Frida: Tomat, rå', url: 'https://frida.fooddata.dk/food/1' })
+    // The paused turn is sent back as is, with no extra user message.
+    expect(requests[1].at(-1)?.role).toBe('assistant')
+    expect(models).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5'])
+  })
+
+  it('drops a source URL that never appeared in a search or fetch', () => {
+    const { input } = submit({}) as { input: unknown }
+    const parsed = parseEstimate(input, 'tomat', new Set(['https://usda.gov/x']))
+    expect(parsed.ok && parsed.value.lookup.source).toEqual({ name: 'Frida: Tomat, rå' })
+  })
+
+  it('sends impossible numbers back to Claude and accepts the corrected ones', async () => {
+    const { client, requests } = scripted([reply([submit({ protein_g: 80, carbs_g: 30 })]), reply([submit({})])])
+    const r = await estimateMacros(client, 'tomat')
+    expect(r.lookup.per100.protein).toBe(0.7)
+    const results = requests[1].at(-1)?.content as { is_error?: boolean; content: string }[]
+    expect(results[0].is_error).toBe(true)
+    expect(results[0].content).toMatch(/more than 100 g/)
+  })
+
+  it('reports a text that is not a food', async () => {
+    const { client } = scripted([reply([submit({ found: false, protein_g: 0, carbs_g: 0, fat_g: 0, kcal: 0, source_name: '' })])])
+    expect((await estimateMacros(client, 'asdf')).found).toBe(false)
+  })
+})

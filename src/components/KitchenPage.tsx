@@ -96,7 +96,7 @@ export function KitchenPage() {
               kind: 'edit',
               title: 'Add food',
               draft: { name: '', source: 'custom', per100: zeroMacros(), stock: 'home' },
-              banner: 'Type the macros per 100 g, e.g. from the packaging or a quick web search.',
+              banner: 'Type a name, then let Claude look up the macros, or type them per 100 g yourself.',
             })
           }
         >
