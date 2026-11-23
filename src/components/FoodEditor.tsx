@@ -164,6 +164,11 @@ export function FoodEditor({ initial, title, banner, onSave, onCancel, onDelete 
                 Add API key to look up macros
               </button>
             )}
+            {lookup.st.kind === 'done' && lookup.st.cached && (
+              <button type="button" className="secondary" onClick={() => lookup.run(next.name, true)}>
+                Look up again
+              </button>
+            )}
             {busy && (
               <button
                 type="button"
@@ -201,14 +206,6 @@ export function FoodEditor({ initial, title, banner, onSave, onCancel, onDelete 
                 ? `Filled in from your saved lookup of "${lookup.st.lookup.query}". `
                 : 'Filled in by Claude from the source below. '}
               Check the numbers before saving.
-              {lookup.st.cached && (
-                <>
-                  {' '}
-                  <button type="button" className="link" onClick={() => lookup.run(next.name, true)}>
-                    Look up again
-                  </button>
-                </>
-              )}
             </p>
           )}
         </div>

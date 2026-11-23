@@ -21,6 +21,9 @@ describe('normalizeQuery', () => {
     expect(normalizeQuery('  Hjemmedyrkede   TOMATER! ')).toBe('hjemmedyrkede tomater')
     expect(normalizeQuery('Rød-kål, rå')).toBe('rød kål rå')
     expect(normalizeQuery('Skyr 0,2%')).toBe('skyr 0 2%')
+    expect(normalizeQuery('2% mælk')).not.toBe(normalizeQuery('mælk'))
+    // "å" typed as one character or as "a" plus a combining ring gives the same key.
+    expect(normalizeQuery('Kål, r\u00e5')).toBe(normalizeQuery('Kål, ra\u030a'))
   })
 })
 

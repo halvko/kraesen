@@ -5,6 +5,7 @@ import type {
   BetaMessageParam,
   BetaTool,
   BetaToolResultBlockParam,
+  BetaToolUnion,
   BetaToolUseBlock,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { type PortionRequest, type Solution, solvePortions } from './solver'
@@ -56,6 +57,76 @@ function textOf(msg: BetaMessage): string {
     .filter((b) => b.type === 'text')
     .map((b) => (b as { text: string }).text)
     .join('')
+}
+
+// ---------------------------------------------------------------------------
+// Tool-use loop shared by the macro lookup and the meal agent
+// ---------------------------------------------------------------------------
+
+/** What a client tool call produced: a result to send back to Claude, or the loop's final answer. */
+type ToolOutcome<T> = { result: string; isError: boolean } | { done: T }
+
+interface ToolLoop<T> {
+  system: string
+  tools: BetaToolUnion[]
+  firstMessage: string
+  maxTurns: number
+  effort: 'low' | 'medium' | 'high'
+  thinking?: { type: 'adaptive'; display: 'summarized' }
+  /** Said to Claude when it stops without calling a tool. */
+  nudge: string
+  /** Who is speaking in errors shown to the user, e.g. "The lookup". */
+  what: string
+  giveUp: string
+  /** Called with each response before its tool calls are handled. */
+  onResponse?: (content: BetaMessage['content']) => void
+  handle: (toolUse: BetaToolUseBlock) => ToolOutcome<T>
+  signal?: AbortSignal
+}
+
+/**
+ * Sends the conversation, resumes paused server tool turns, and answers every client tool call
+ * in a response (an unanswered call would make the next request fail) until a handler is done.
+ */
+async function runToolLoop<T>(client: Anthropic, loop: ToolLoop<T>): Promise<T> {
+  const messages: BetaMessageParam[] = [{ role: 'user', content: loop.firstMessage }]
+  for (let turn = 0; turn < loop.maxTurns; turn++) {
+    if (loop.signal?.aborted) throw new Error('Cancelled')
+    const response = await client.beta.messages.create(
+      {
+        model: MODEL.id,
+        max_tokens: 16000,
+        betas: [FALLBACK_BETA],
+        fallbacks: 'default',
+        ...(loop.thinking ? { thinking: loop.thinking } : {}),
+        output_config: { effort: loop.effort },
+        system: loop.system,
+        tools: loop.tools,
+        messages,
+      },
+      { signal: loop.signal },
+    )
+    loop.onResponse?.(response.content)
+    if (response.stop_reason === 'refusal') throw new Error('Claude declined this request.')
+    if (response.stop_reason === 'max_tokens') throw new Error(`${loop.what} was cut off. Please try again.`)
+    messages.push({ role: 'assistant', content: response.content as BetaContentBlockParam[] })
+    // The server's tool loop paused; sending the conversation back resumes it.
+    if (response.stop_reason === 'pause_turn') continue
+
+    const toolUses = response.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use')
+    if (toolUses.length === 0) {
+      messages.push({ role: 'user', content: loop.nudge })
+      continue
+    }
+    const results: BetaToolResultBlockParam[] = []
+    for (const tu of toolUses) {
+      const outcome = loop.handle(tu)
+      if ('done' in outcome) return outcome.done
+      results.push({ type: 'tool_result', tool_use_id: tu.id, content: outcome.result, is_error: outcome.isError })
+    }
+    messages.push({ role: 'user', content: results })
+  }
+  throw new Error(loop.giveUp)
 }
 
 // ---------------------------------------------------------------------------
@@ -203,15 +274,12 @@ export const LOOKUP_SYSTEM =
 export type MacroEstimate = { found: false } | { found: true; lookup: FoodLookup }
 
 /** Every URL Claude saw in a search result or fetched while answering, without a trailing slash. */
-function seenUrls(content: BetaMessage['content'][]): Set<string> {
-  const urls = new Set<string>()
-  for (const blocks of content) {
-    for (const b of blocks) {
-      if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) b.content.forEach((r) => urls.add(trimSlash(r.url)))
-      if (b.type === 'web_fetch_tool_result' && b.content.type === 'web_fetch_result') urls.add(trimSlash(b.content.url))
-    }
-  }
-  return urls
+function seenUrls(content: BetaMessage['content']): string[] {
+  return content.flatMap((b) => {
+    if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) return b.content.map((r) => trimSlash(r.url))
+    if (b.type === 'web_fetch_tool_result' && b.content.type === 'web_fetch_result') return [trimSlash(b.content.url)]
+    return []
+  })
 }
 
 const trimSlash = (u: string) => u.replace(/\/+$/, '')
@@ -260,54 +328,29 @@ export function parseEstimate(input: unknown, query: string, urls: Set<string>, 
 }
 
 /** Looks up the macros per 100 g of any food with Claude and web search. The caller caches the result. */
-export async function estimateMacros(client: Anthropic, query: string, signal?: AbortSignal): Promise<MacroEstimate> {
-  const messages: BetaMessageParam[] = [{ role: 'user', content: `Food: ${query.trim()}` }]
-  const contents: BetaMessage['content'][] = []
-  for (let turn = 0; turn < 8; turn++) {
-    if (signal?.aborted) throw new Error('Cancelled')
-    const response = await client.beta.messages.create(
-      {
-        model: MODEL.id,
-        max_tokens: 16000,
-        betas: [FALLBACK_BETA],
-        fallbacks: 'default',
-        output_config: { effort: 'medium' },
-        system: LOOKUP_SYSTEM,
-        tools: [
-          { type: 'web_search_20260209', name: 'web_search', max_uses: 5 },
-          { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 },
-          ESTIMATE_TOOL,
-        ],
-        messages,
-      },
-      { signal },
-    )
-    if (response.stop_reason === 'refusal') throw new Error('Claude declined to look this up.')
-    if (response.stop_reason === 'max_tokens') throw new Error('The lookup was cut off. Please try again.')
-    contents.push(response.content)
-    messages.push({ role: 'assistant', content: response.content as BetaContentBlockParam[] })
-    // The server's search loop paused; sending the conversation back resumes it.
-    if (response.stop_reason === 'pause_turn') continue
-
-    const toolUses = response.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use')
-    if (toolUses.length === 0) {
-      messages.push({ role: 'user', content: 'Please finish by calling submit_macros.' })
-      continue
-    }
-    // Every tool call gets a result, even when Claude called submit_macros more than once.
-    const results: BetaToolResultBlockParam[] = []
-    for (const tu of toolUses) {
-      if (tu.name !== 'submit_macros') {
-        results.push({ type: 'tool_result', tool_use_id: tu.id, content: `Unknown tool ${tu.name}`, is_error: true })
-        continue
-      }
-      const parsed = parseEstimate(tu.input, query, seenUrls(contents))
-      if (parsed.ok) return parsed.value
-      results.push({ type: 'tool_result', tool_use_id: tu.id, content: parsed.error, is_error: true })
-    }
-    messages.push({ role: 'user', content: results })
-  }
-  throw new Error('Claude did not finish the lookup. Please try again.')
+export function estimateMacros(client: Anthropic, query: string, signal?: AbortSignal): Promise<MacroEstimate> {
+  const seen = new Set<string>()
+  return runToolLoop<MacroEstimate>(client, {
+    system: LOOKUP_SYSTEM,
+    tools: [
+      { type: 'web_search_20260209', name: 'web_search', max_uses: 5 },
+      { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 },
+      ESTIMATE_TOOL,
+    ],
+    firstMessage: `Food: ${query.trim()}`,
+    maxTurns: 8,
+    effort: 'medium',
+    nudge: 'Please finish by calling submit_macros.',
+    what: 'The lookup',
+    giveUp: 'Claude did not finish the lookup. Please try again.',
+    onResponse: (content) => seenUrls(content).forEach((u) => seen.add(u)),
+    handle: (tu) => {
+      if (tu.name !== 'submit_macros') return { result: `Unknown tool ${tu.name}`, isError: true }
+      const parsed = parseEstimate(tu.input, query, seen)
+      return parsed.ok ? { done: parsed.value } : { result: parsed.error, isError: true }
+    },
+    signal,
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -560,7 +603,6 @@ export async function generateMeal(
 
   const { system, user } = buildPrompt(req, foods)
   const tools = toolsFor(req.staples)
-  const messages: BetaMessageParam[] = [{ role: 'user', content: user }]
   const solutions = new Map<string, Solution>()
   let counter = 0
 
@@ -598,75 +640,57 @@ export async function generateMeal(
     }
   }
 
-  for (let turn = 0; turn < 16; turn++) {
-    if (signal?.aborted) throw new Error('Cancelled')
-    const response = await client.beta.messages.create(
-      {
-        model: MODEL.id,
-        max_tokens: 16000,
-        betas: [FALLBACK_BETA],
-        fallbacks: 'default',
-        thinking: { type: 'adaptive', display: 'summarized' },
-        output_config: { effort: 'medium' },
-        system,
-        tools,
-        messages,
+  const submit = (input: unknown): ToolOutcome<Recipe> => {
+    const parsed = parseSubmit(input, req.staples)
+    const sol = parsed.ok ? solutions.get(parsed.value.solution_id) : undefined
+    if (!parsed.ok || !sol) {
+      const reason = parsed.ok ? `Unknown solution_id: ${parsed.value.solution_id}` : parsed.error
+      onEvent({ kind: 'rejected', reason })
+      return { result: reason, isError: true }
+    }
+    const recipe = parsed.value
+    const kept = sol.portions.filter((p) => p.grams > 0)
+    return {
+      done: {
+        id: crypto.randomUUID(),
+        title: recipe.title,
+        summary: recipe.summary,
+        ingredients: kept.map((p) => ({ wareId: p.ware.id, name: p.ware.name, grams: p.grams, toBuy: p.ware.stock === 'shop' })),
+        extras: recipe.extras,
+        steps: recipe.steps,
+        tips: recipe.tips,
+        totals: sol.totals,
+        target: sol.target,
+        createdAt: Date.now(),
       },
-      { signal },
-    )
-
-    for (const block of response.content) {
-      if (block.type === 'thinking' && block.thinking) onEvent({ kind: 'thinking', text: block.thinking })
-      if (block.type === 'text' && block.text.trim()) onEvent({ kind: 'note', text: block.text })
     }
+  }
 
-    if (response.stop_reason === 'refusal') throw new Error('Claude declined this request.')
-    if (response.stop_reason === 'max_tokens') throw new Error('The response was cut off. Please try again.')
-
-    messages.push({ role: 'assistant', content: response.content as BetaContentBlockParam[] })
-
-    if (response.stop_reason === 'pause_turn') continue
-
-    const toolUses = response.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use')
-    if (toolUses.length === 0) {
-      messages.push({ role: 'user', content: 'Please continue: use compute_portions and finish with submit_recipe.' })
-      continue
-    }
-
-    const results: BetaToolResultBlockParam[] = []
-    for (const tu of toolUses) {
+  return runToolLoop<Recipe>(client, {
+    system,
+    tools,
+    firstMessage: user,
+    maxTurns: 16,
+    effort: 'medium',
+    thinking: { type: 'adaptive', display: 'summarized' },
+    nudge: 'Please continue: use compute_portions and finish with submit_recipe.',
+    what: 'The response',
+    giveUp: 'Claude did not finish a recipe in time. Try again, perhaps with a looser target.',
+    onResponse: (content) => {
+      for (const block of content) {
+        if (block.type === 'thinking' && block.thinking) onEvent({ kind: 'thinking', text: block.thinking })
+        if (block.type === 'text' && block.text.trim()) onEvent({ kind: 'note', text: block.text })
+      }
+    },
+    handle: (tu) => {
       if (tu.name === 'compute_portions') {
         const r = compute(tu.input)
         if (r.isError) onEvent({ kind: 'rejected', reason: r.content })
-        results.push({ type: 'tool_result', tool_use_id: tu.id, content: r.content, is_error: r.isError })
-      } else if (tu.name === 'submit_recipe') {
-        const parsed = parseSubmit(tu.input, req.staples)
-        const sol = parsed.ok ? solutions.get(parsed.value.solution_id) : undefined
-        if (!parsed.ok || !sol) {
-          const reason = parsed.ok ? `Unknown solution_id: ${parsed.value.solution_id}` : parsed.error
-          onEvent({ kind: 'rejected', reason })
-          results.push({ type: 'tool_result', tool_use_id: tu.id, content: reason, is_error: true })
-          continue
-        }
-        const input = parsed.value
-        const kept = sol.portions.filter((p) => p.grams > 0)
-        return {
-          id: crypto.randomUUID(),
-          title: input.title,
-          summary: input.summary,
-          ingredients: kept.map((p) => ({ wareId: p.ware.id, name: p.ware.name, grams: p.grams, toBuy: p.ware.stock === 'shop' })),
-          extras: input.extras,
-          steps: input.steps,
-          tips: input.tips,
-          totals: sol.totals,
-          target: sol.target,
-          createdAt: Date.now(),
-        }
-      } else {
-        results.push({ type: 'tool_result', tool_use_id: tu.id, content: `Unknown tool ${tu.name}`, is_error: true })
+        return { result: r.content, isError: r.isError }
       }
-    }
-    messages.push({ role: 'user', content: results })
-  }
-  throw new Error('Claude did not finish a recipe in time. Try again, perhaps with a looser target.')
+      if (tu.name === 'submit_recipe') return submit(tu.input)
+      return { result: `Unknown tool ${tu.name}`, isError: true }
+    },
+    signal,
+  })
 }

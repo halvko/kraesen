@@ -181,6 +181,10 @@ describe('macro lookups', () => {
     expect(s.lookups[0].source).toEqual({ name: 'Frida', note: 'Raw.' })
   })
 
+  it('reads an unknown food source as custom', () => {
+    expect(normalize({ version: 2, wares: [{ ...sample().wares[0], source: 'magic' }] }).wares[0].source).toBe('custom')
+  })
+
   it('round-trips a looked-up food with its source', () => {
     const food = { ...sample().wares[0], source: 'lookup' as const, sourceRef: { name: 'Frida', url: 'https://frida.fooddata.dk/food/1', note: 'Raw.' } }
     const next = importJson(exportJson({ ...sample(), wares: [food] }), emptyState())
