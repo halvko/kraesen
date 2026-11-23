@@ -145,6 +145,8 @@ export interface MealRequest {
   target: Macros
   willingness: BuyWillingness
   wish: string
+  /** The user's standing food preferences from Settings; empty for none. */
+  preferences: string
 }
 
 export type AgentEvent =
@@ -247,11 +249,14 @@ function buildPrompt(req: MealRequest, have: Ware[], buy: Ware[], limit: number)
     '- Frozen wares are fine; mention thawing or cooking from frozen in the steps.\n' +
     '- Ingredients that come out at 0 g should be removed from the set before submitting.\n' +
     `- ${buyRule}\n` +
+    '- If the user states food preferences, every recipe must follow them, including extras and cooking fat. ' +
+    'Skip any listed ware that conflicts with them.\n' +
     '- Write in English. Keep steps concrete with times and temperatures.'
 
   const user =
     `Macro target for this meal: protein ${roundMacro('protein', req.target.protein)} g, carbs ${roundMacro('carbs', req.target.carbs)} g, ` +
     `fat ${roundMacro('fat', req.target.fat)} g, energy ${roundMacro('kcal', req.target.kcal)} kcal.\n` +
+    (req.preferences.trim() ? `Food preferences (always follow): ${req.preferences.trim()}\n` : '') +
     (req.wish.trim() ? `Wish for this meal: ${req.wish.trim()}\n` : '') +
     `\nHAVE (at home, want to use):\n${have.map(wareLine).join('\n') || '(none)'}\n` +
     (limit > 0 ? `\nBUY (willing to buy):\n${buy.map(wareLine).join('\n') || '(none)'}\n` : '')

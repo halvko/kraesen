@@ -4,7 +4,7 @@ import { type AppState, emptyState } from './types'
 
 const sample = (): AppState => ({
   ...emptyState(),
-  profile: { name: 'Erik', dailyGoals: { protein: 150, carbs: 200, fat: 70, kcal: 2050 } },
+  profile: { name: 'Erik', dailyGoals: { protein: 150, carbs: 200, fat: 70, kcal: 2050 }, foodPreferences: 'pescatarian' },
   settings: { apiKey: 'sk-ant-secret', model: 'claude-opus-5-5' },
   wares: [
     {
@@ -80,5 +80,9 @@ describe('normalize', () => {
 
   it('ignores a profile without goals', () => {
     expect(normalize({ profile: {} }).profile).toBeNull()
+  })
+
+  it('reads a profile saved before food preferences existed', () => {
+    expect(normalize({ profile: { dailyGoals: { protein: 1 } } }).profile?.foodPreferences).toBe('')
   })
 })

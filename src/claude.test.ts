@@ -20,6 +20,7 @@ const req = (willingness: MealRequest['willingness']): MealRequest => ({
   target: { protein: 40, carbs: 20, fat: 10, kcal: 330 },
   willingness,
   wish: '',
+  preferences: '',
 })
 
 type Block = { type: 'tool_use'; id: string; name: string; input: unknown } | { type: 'text'; text: string }
@@ -141,6 +142,15 @@ describe('generateMeal', () => {
     const { client, requests } = scripted(chatty)
     await expect(run(client)).rejects.toThrow('did not finish')
     expect(requests.length).toBeLessThanOrEqual(16)
+  })
+
+  it('sends the food preferences with every request', async () => {
+    const { client, requests } = scripted([reply([{ type: 'tool_use', id: 'a', name: 'compute_portions', input: { ingredients: [{ ware_id: 'have1' }] } }]), reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: recipe('S1') }])])
+    await generateMeal(client, 'claude-opus-5-5', { ...req('some'), preferences: 'pescatarian' }, WARES, () => {})
+    expect(requests[0][0].content).toContain('Food preferences (always follow): pescatarian')
+    const plain = scripted([reply([{ type: 'tool_use', id: 'a', name: 'compute_portions', input: { ingredients: [{ ware_id: 'have1' }] } }]), reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: recipe('S1') }])])
+    await run(plain.client)
+    expect(plain.requests[0][0].content).not.toContain('Food preferences')
   })
 
   it('stops on a refusal', async () => {

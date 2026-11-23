@@ -67,7 +67,7 @@ export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void
       const r = await generateMeal(
         makeClient(state.settings.apiKey),
         state.settings.model,
-        { target, willingness, wish },
+        { target, willingness, wish, preferences: state.profile?.foodPreferences ?? '' },
         state.wares,
         (e) => setEvents((prev) => [...prev, e]),
         ac.signal,

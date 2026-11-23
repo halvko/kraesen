@@ -107,7 +107,8 @@ label > span {
 }
 
 input,
-select {
+select,
+textarea {
   font: inherit;
   padding: 10px 12px;
   border-radius: 8px;

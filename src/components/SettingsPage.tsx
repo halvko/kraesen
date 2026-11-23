@@ -15,6 +15,7 @@ export function SettingsPage() {
     state.profile?.dailyGoals ?? { protein: 140, carbs: 220, fat: 70, kcal: 2100 },
   )
   const [name, setName] = useState(state.profile?.name ?? '')
+  const [preferences, setPreferences] = useState(state.profile?.foodPreferences ?? '')
   const [apiKey, setApiKey] = useState(state.settings.apiKey)
   const [showKey, setShowKey] = useState(false)
   const [message, setMessage] = useState('')
@@ -23,7 +24,7 @@ export function SettingsPage() {
   const save = () => {
     update((s) => ({
       ...s,
-      profile: { name: name.trim(), dailyGoals: goals },
+      profile: { name: name.trim(), dailyGoals: goals, foodPreferences: preferences.trim() },
       settings: { ...s.settings, apiKey: apiKey.trim() },
     }))
     setMessage('Saved.')
@@ -46,6 +47,7 @@ export function SettingsPage() {
       replace(next)
       setGoals(next.profile?.dailyGoals ?? goals)
       setName(next.profile?.name ?? '')
+      setPreferences(next.profile?.foodPreferences ?? '')
       setMessage('Imported.')
     } catch (e) {
       setMessage(e instanceof Error ? e.message : 'Import failed.')
@@ -67,6 +69,19 @@ export function SettingsPage() {
           From protein, carbs and fat alone that is about {derivedKcal} kcal.
           {Math.abs(derivedKcal - goals.kcal) > goals.kcal * 0.1 && goals.kcal > 0 ? ' Your energy goal differs quite a bit from that.' : ''}
         </p>
+      </section>
+
+      <section className="card">
+        <h2>Food preferences</h2>
+        <label>
+          <span>Every meal follows these. Leave empty for none.</span>
+          <textarea
+            rows={3}
+            value={preferences}
+            onChange={(e) => setPreferences(e.target.value)}
+            placeholder="e.g. pescatarian, no light or low-fat products, no artificial sweeteners"
+          />
+        </label>
       </section>
 
       <section className="card">
