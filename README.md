@@ -10,8 +10,9 @@ and each user pastes their own Claude API key.
 
 ## Using it
 
-1. **Settings**: enter your daily goals (protein, carbs, fat, kcal) and paste a
-   Claude API key from console.anthropic.com. Export a JSON backup now and
+1. **Settings**: enter your daily goals (protein, carbs, fat, kcal), any food
+   preferences every meal must follow ("pescatarian, no sweeteners"), and
+   paste a Claude API key from console.anthropic.com. Export a JSON backup now and
    then; the key is never exported.
 2. **Wares**: add what you have. Home-grown produce is added by hand with its
    macros per 100 g. Packaged products can be scanned: the barcode is looked up
@@ -21,7 +22,7 @@ and each user pastes their own Claude API key.
    neither, and is marked available, frozen or out.
 3. **Plan**: pick a share of your daily goals (or type a target), say how
    willing you are to shop, optionally add a wish ("something warm"), and
-   generate. You see each portion fit Claude tries, then the recipe.
+   generate. Your food preferences always apply. You see each portion fit Claude tries, then the recipe.
 
 ## How meal planning works
 

@@ -16,6 +16,7 @@ const scale = (m: Macros, f: number): Macros => Object.fromEntries(MACRO_KEYS.ma
 export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void; goToWares: () => void }) {
   const { state, update } = useStore()
   const daily = state.profile?.dailyGoals
+  const preferences = state.profile?.foodPreferences.trim() ?? ''
   const [share, setShare] = useState(1 / 3)
   const [target, setTarget] = useState<Macros>(() => scale(daily ?? { protein: 0, carbs: 0, fat: 0, kcal: 0 }, 1 / 3))
   const [willingness, setWillingness] = useState<BuyWillingness>('some')
@@ -67,7 +68,7 @@ export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void
       const r = await generateMeal(
         makeClient(state.settings.apiKey),
         state.settings.model,
-        { target, willingness, wish, preferences: state.profile?.foodPreferences ?? '' },
+        { target, willingness, wish, preferences },
         state.wares,
         (e) => setEvents((prev) => [...prev, e]),
         ac.signal,
@@ -107,6 +108,14 @@ export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void
           <span>Wish (optional)</span>
           <input value={wish} onChange={(e) => setWish(e.target.value)} placeholder="e.g. something warm, quick lunch, no oven" />
         </label>
+        {preferences && (
+          <p className="hint">
+            Following your food preferences: {preferences.replace(/[.\s]+$/, '')}.{' '}
+            <button type="button" className="link" onClick={goToSettings}>
+              Change
+            </button>
+          </p>
+        )}
         <p className="hint">
           Using {haveCount} ware{haveCount === 1 ? '' : 's'} you have
           {willingness !== 'none' ? ` and ${buyCount} you could buy` : ''}.{' '}

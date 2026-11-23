@@ -106,6 +106,10 @@ label > span {
   color: var(--muted);
 }
 
+textarea {
+  resize: vertical;
+}
+
 input,
 select,
 textarea {

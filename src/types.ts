@@ -42,7 +42,7 @@ export interface Ware {
 export interface Profile {
   name: string
   dailyGoals: Macros
-  /** Free text sent with every meal request as a rule Claude must follow, e.g. "pescatarian, no sweeteners". */
+  /** Free text sent with every meal request; empty for none. */
   foodPreferences: string
 }
 

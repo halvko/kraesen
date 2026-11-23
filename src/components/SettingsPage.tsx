@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { exportJson, importJson } from '../persist'
 import { useStore } from '../store'
-import { DEFAULT_MODEL, type Macros } from '../types'
+import { DEFAULT_MODEL, type Macros, type Profile } from '../types'
 import { MacroInputs } from './MacroInputs'
 
 const MODELS = [
@@ -9,13 +9,23 @@ const MODELS = [
   { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (cheaper)' },
 ]
 
+const DEFAULT_GOALS: Macros = { protein: 140, carbs: 220, fat: 70, kcal: 2100 }
+
+/** The profile form's fields for a stored profile, or the defaults when there is none. */
+const formFrom = (p: Profile | null) => ({
+  name: p?.name ?? '',
+  goals: p?.dailyGoals ?? DEFAULT_GOALS,
+  preferences: p?.foodPreferences ?? '',
+})
+
 export function SettingsPage() {
   const { state, update, replace } = useStore()
-  const [goals, setGoals] = useState<Macros>(
-    state.profile?.dailyGoals ?? { protein: 140, carbs: 220, fat: 70, kcal: 2100 },
-  )
-  const [name, setName] = useState(state.profile?.name ?? '')
-  const [preferences, setPreferences] = useState(state.profile?.foodPreferences ?? '')
+  const [form, setForm] = useState(() => formFrom(state.profile))
+  const { name, goals, preferences } = form
+  const setField = <K extends keyof typeof form>(k: K) => (v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }))
+  const setGoals = setField('goals')
+  const setName = setField('name')
+  const setPreferences = setField('preferences')
   const [apiKey, setApiKey] = useState(state.settings.apiKey)
   const [showKey, setShowKey] = useState(false)
   const [message, setMessage] = useState('')
@@ -45,9 +55,7 @@ export function SettingsPage() {
       const next = importJson(await file.text(), state)
       if (!confirm(`Replace all data on this device with ${next.wares.length} wares and ${next.recipes.length} recipes from the file?`)) return
       replace(next)
-      setGoals(next.profile?.dailyGoals ?? goals)
-      setName(next.profile?.name ?? '')
-      setPreferences(next.profile?.foodPreferences ?? '')
+      setForm(formFrom(next.profile))
       setMessage('Imported.')
     } catch (e) {
       setMessage(e instanceof Error ? e.message : 'Import failed.')
