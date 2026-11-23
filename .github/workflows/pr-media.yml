@@ -1,0 +1,29 @@
+# Requires every PR description to show its change with a screenshot or video.
+# A PR with nothing to see (CI, docs, refactors) takes the `no-visual-change` label.
+name: PR media
+
+on:
+  pull_request:
+    types: [opened, reopened, edited, synchronize, ready_for_review, labeled, unlabeled]
+
+jobs:
+  media:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - env:
+          BODY: ${{ github.event.pull_request.body }}
+          EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'no-visual-change') }}
+        run: |
+          if [ "$EXEMPT" = true ]; then
+            echo "Labelled no-visual-change; no screenshot needed."
+            exit 0
+          fi
+          # Images and videos dragged into a GitHub description become
+          # user-attachments links; markdown images, <img> and <video> count too.
+          if printf '%s' "$BODY" | grep -Eiq '!\[[^]]*\]\([^)]+\)|<img[[:space:]]|<video[[:space:]]|github\.com/user-attachments/assets/|\.(png|jpe?g|gif|webp|mp4|mov|webm)([?)[:space:]]|$)'; then
+            echo "The description has a screenshot or video."
+            exit 0
+          fi
+          echo "::error::Add a screenshot or video of the change to the PR description (drag it into the description on GitHub). If nothing visible changed, add the 'no-visual-change' label."
+          exit 1

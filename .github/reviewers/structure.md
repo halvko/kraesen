@@ -1,0 +1,50 @@
+---
+model: opus
+---
+
+Look for structural red flags: code whose shape makes it harder to reason
+about, slower, or harder to abstract than it needs to be.
+
+- Overlapping work along a call path: a caller and a callee (or several
+  frames of the same trace) each validate the same input, look up the
+  same data, recompute the same value, or re-check an invariant one of
+  them already established. Follow the calls the diff adds or changes far
+  enough to see it.
+- Repeated, similarly shaped code: functions, match arms or blocks that
+  differ only in a name, a type or a constant, within the diff or between
+  the diff and existing code, or two ways of doing one thing (formatting
+  macros, persisting state). Point at the copies.
+- Logic in the wrong home: a component or module doing work that belongs to
+  another (UI computing macros the solver owns, say) (and is likely done there too), or a value threaded through
+  several layers only to be recomputed at the end.
+- A decision made without the information it needs: code that guesses,
+  by heuristics or by trying several readings, what a later step knows
+  for certain (e.g. a component guessing what the store or the solver knows). Name that step, and ask whether the code could keep
+  one form that covers every reading and let that step decide. A rule
+  that gains a special case each round is the sign.
+- Work the caller does not need: a callee that builds, collects or
+  computes more than its callers use (a full structure when one field is
+  read, an array built for its length), or a loop that calls into
+  something which walks a whole collection, tree or table on each
+  iteration, often over data the loop does not need (a hidden quadratic, or
+  a scan for one field of every item). Look at what the callee touches and
+  produces, not just its signature.
+- Hidden coupling: code that relies on an order, position or shape it does
+  not own, such as the first entries of a list being of one kind.
+- Checks bolted on afterwards: validating something after building it,
+  where building it differently (parsing the shape, a type that cannot
+  hold the bad state, one place that must handle every case) would rule
+  the mistake out. Likewise a special case for one context when the rule
+  holds in all of them, or a fallback that should fall out of the normal
+  mechanism.
+- Guards for the impossible: a check, fallback or default for a case that
+  looks unreachable (lengths that cannot differ, a field the type
+  says is always set). Say how a program reaches it; if none can, it is an internal
+  error, not a quiet fallback.
+- A helper with one caller that names nothing the call site did not
+  already say.
+
+For each finding, name the places involved and say why it matters here:
+harder to reason about, slower, or in the way of a better abstraction.
+These are judgment calls, not rules: report a smell when in doubt and say
+how sure you are, and the implementer weighs it.
