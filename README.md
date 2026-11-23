@@ -62,16 +62,20 @@ The `Deploy` workflow builds and publishes `main` on every push.
 ### Custom subdomain
 
 1. At your DNS provider, add a `CNAME` record for the subdomain (for example
-   `kraesen.example.com`) pointing to `halvko.github.io`.
-2. Add a file `public/CNAME` containing just the domain, e.g.
-   `kraesen.example.com`, and merge it to `main`. The deploy workflow sees the
-   file and builds for the domain root (`/`) instead of `/kraesen/`.
-3. In **Settings → Pages**, enter the same domain under **Custom domain**,
+   `kraesen.example.com`) pointing to `halvko.github.io`. On Cloudflare, set it
+   to DNS only (grey cloud) so GitHub can issue the HTTPS certificate.
+2. In **Settings → Pages**, enter the same domain under **Custom domain**,
    wait for the DNS check, then tick **Enforce HTTPS** (the camera only works
-   over HTTPS).
+   over HTTPS). With Actions deploys this setting, not the file, attaches the
+   domain, so do it first.
+3. Add a file `public/CNAME` containing just the domain, e.g.
+   `kraesen.example.com`, and merge it to `main`. The deploy workflow sees the
+   file and builds for the domain root (`/`) instead of `/kraesen/`; merged
+   before step 2, the site at the `github.io` address would load no assets.
 
-Installed copies of the PWA from the `github.io` address will not follow the
-move; reinstall from the new domain and import a JSON backup.
+Data lives per address, and after the switch the `github.io` address redirects
+to the new domain. Anyone already using the app there should export a JSON
+backup before step 2, and import it on the new domain.
 
 ## Review CI
 
