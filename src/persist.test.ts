@@ -181,6 +181,12 @@ describe('macro lookups', () => {
     expect(s.lookups[0].source).toEqual({ name: 'Frida', note: 'Raw.' })
   })
 
+  it('keeps a source only on a looked-up food', () => {
+    const ref = { name: 'Frida' }
+    expect(normalize({ version: 2, wares: [{ ...sample().wares[0], source: 'custom', sourceRef: ref }] }).wares[0].sourceRef).toBeUndefined()
+    expect(normalize({ version: 2, wares: [{ ...sample().wares[0], source: 'lookup', sourceRef: ref }] }).wares[0].sourceRef).toEqual(ref)
+  })
+
   it('reads an unknown food source as custom', () => {
     expect(normalize({ version: 2, wares: [{ ...sample().wares[0], source: 'magic' }] }).wares[0].source).toBe('custom')
   })

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ErrorInfo } from '../claude'
 import { useStore } from '../store'
-import { addLookups, findLookup, type FoodLookup, type Macros, normalizeQuery, sameMacros, type SourceRef, type Stock, STOCK_HINT, STOCK_LABEL, STOCKS, type Ware } from '../types'
+import { addLookups, findLookup, lookupFits, withTypedMacros, type FoodLookup, type Macros, sameMacros, type SourceRef, type Stock, STOCK_HINT, STOCK_LABEL, STOCKS, type Ware } from '../types'
 import { MacroInputs } from './MacroInputs'
 import { ClaudeError } from './ClaudeError'
 import { KeyForm } from './ProfileForms'
@@ -100,7 +100,7 @@ function useMacroLookup(currentName: string, apply: (l: FoodLookup) => void) {
       }
       update((s) => ({ ...s, lookups: addLookups(s.lookups, [r.lookup]) }))
       // The name was changed while Claude searched: keep the result for that name, but leave this form alone.
-      if (normalizeQuery(nameRef.current) !== r.lookup.key) {
+      if (!lookupFits(nameRef.current, r.lookup)) {
         setSt({ kind: 'idle' })
         return
       }
@@ -213,10 +213,9 @@ export function FoodEditor({ initial, title, banner, onSave, onCancel, onDelete 
       <MacroInputs
         idPrefix="food"
         value={d.per100}
-        // Numbers typed by hand are the user's own: the looked-up source no longer applies.
         onChange={(per100) => {
-          if (d.source === 'lookup') lookup.dismiss()
-          setD({ ...d, per100, ...(d.source === 'lookup' ? { source: 'custom', sourceRef: undefined } : {}) })
+          if (d.sourceRef) lookup.dismiss()
+          setD(withTypedMacros(d, per100))
         }}
       />
       {d.sourceRef && <SourceLine source={d.sourceRef} />}

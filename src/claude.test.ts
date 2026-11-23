@@ -326,9 +326,21 @@ describe('macro lookup', () => {
     expect(lookupOf(parse({ source_url: 'javascript:alert(1)' }, ['javascript:alert(1)']))?.source.url).toBeUndefined()
   })
 
-  it('accepts macros up to 100 g per 100 g and rejects more', () => {
-    expect(lookupOf(parse({ protein_g: 0, carbs_g: 0, fat_g: 100, fibre_g: 0, kcal: 900 }))).toBeDefined()
-    expect(errorOf(parse({ protein_g: 80, carbs_g: 30 }))).toMatch(/more than 100 g/)
+  it('accepts macros up to 100.5 g per 100 g (rounding) and rejects more', () => {
+    const fat = (g: number) => ({ protein_g: 0, carbs_g: 0, fat_g: g, fibre_g: 0, kcal: 9 * g })
+    expect(lookupOf(parse(fat(100.5)))).toBeDefined()
+    expect(errorOf(parse(fat(100.6)))).toMatch(/more than 100 g/)
+  })
+
+  it('allows energy within 15 kcal or 20 % of the macros, whichever is more', () => {
+    // Macros giving 21 kcal: the 15 kcal margin applies.
+    const low = (kcal: number) => ({ protein_g: 0, carbs_g: 5.25, fat_g: 0, fibre_g: 0, kcal })
+    expect(lookupOf(parse(low(36)))).toBeDefined()
+    expect(errorOf(parse(low(37)))).toMatch(/does not fit/)
+    // Macros giving 900 kcal: the 20 % margin applies.
+    const high = (kcal: number) => ({ protein_g: 0, carbs_g: 0, fat_g: 100, fibre_g: 0, kcal })
+    expect(lookupOf(parse(high(1080)))).toBeDefined()
+    expect(errorOf(parse(high(1081)))).toMatch(/does not fit/)
   })
 
   it('rejects energy that does not fit the macros, such as kJ given as kcal', () => {
@@ -359,8 +371,9 @@ describe('macro lookup', () => {
     expect(errorOf(parse({ source_name: ' ' }))).toMatch(/source_name/)
   })
 
-  it('reports a text that is not a food', () => {
+  it('reports a text that is not a food without checking its numbers', () => {
     expect(parseEstimate({ ...input(), found: false }, 'asdf', new Set())).toEqual({ ok: true, value: { found: false } })
+    expect(parseEstimate({ ...input({ protein_g: 90, carbs_g: 90 }), found: false }, 'asdf', new Set())).toEqual({ ok: true, value: { found: false } })
   })
 
   it('normalizes the cache key from what the user typed', async () => {

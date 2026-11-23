@@ -96,7 +96,8 @@ function readWare(v: unknown, fromV1: boolean): Ware | null {
     per100: readMacros(v.per100),
     stock,
     notes,
-    sourceRef: readRef(v.sourceRef),
+    // Only a looked-up food has a source; anything else would show a source its numbers did not come from.
+    sourceRef: v.source === 'lookup' ? readRef(v.sourceRef) : undefined,
     createdAt: nonNegative(v.createdAt),
   }
 }

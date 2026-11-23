@@ -82,6 +82,17 @@ export function addLookups(lookups: FoodLookup[], added: FoodLookup[]): FoodLook
   return [...added, ...lookups].filter((l) => !seen.has(l.key) && !!seen.add(l.key))
 }
 
+/** True when a lookup still belongs in the form: the name was not changed while Claude searched. */
+export const lookupFits = (currentName: string, lookup: FoodLookup) => normalizeQuery(currentName) === lookup.key
+
+/**
+ * A food after its macros were typed by hand. Typed numbers are the user's own, so a looked-up
+ * source no longer applies; sourceRef alone says whether there is one.
+ */
+export function withTypedMacros<T extends { per100: Macros; source: WareSource; sourceRef?: SourceRef }>(food: T, per100: Macros): T {
+  return food.sourceRef ? { ...food, per100, source: 'custom', sourceRef: undefined } : { ...food, per100 }
+}
+
 /** True for an absolute http(s) link: the only kind the app shows or stores. */
 export const isWebUrl = (u: string) => /^https?:\/\/\S+$/i.test(u)
 
