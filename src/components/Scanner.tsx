@@ -122,7 +122,7 @@ export function Scanner({ onResult, onCancel }: Props) {
     setError('')
     try {
       const data = await toJpegBase64(file)
-      const r = await readNutritionLabel(makeClient(state.settings.apiKey), state.settings.model, data, 'image/jpeg', signal)
+      const r = await readNutritionLabel(makeClient(state.settings.apiKey), data, 'image/jpeg', signal)
       if (signal.aborted) return
       if (!r.readable) {
         setError('Claude could not find a nutrition table in that photo. Try again closer and in good light.')

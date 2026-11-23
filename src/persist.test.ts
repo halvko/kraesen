@@ -10,7 +10,7 @@ const sample = (): AppState => ({
     foodRules: 'pescatarian',
     staples: ['salt', 'cumin'],
   },
-  settings: { apiKey: 'sk-ant-secret', model: 'claude-opus-5-5', rulesAnswered: true },
+  settings: { apiKey: 'sk-ant-secret', rulesAnswered: true },
   wares: [
     {
       id: 'w1',
@@ -40,7 +40,7 @@ describe('export and import', () => {
   it('round-trips foods, recipes, goals and staples, never exports the key, and keeps the key on this device', () => {
     const text = exportJson(sample())
     expect(text).not.toContain('sk-ant-secret')
-    const current = { ...emptyState(), settings: { apiKey: 'sk-ant-mine', model: 'claude-sonnet-5-5', rulesAnswered: false } }
+    const current = { ...emptyState(), settings: { apiKey: 'sk-ant-mine', rulesAnswered: false } }
     const next = importJson(text, current)
     expect(next.settings.apiKey).toBe('sk-ant-mine')
     expect(next.settings.rulesAnswered).toBe(true)
@@ -140,6 +140,11 @@ describe('normalize', () => {
     expect(s.recipes).toHaveLength(1)
     expect(s.recipes[0].ingredients).toEqual([{ wareId: '', name: 'Kale', grams: 10, toBuy: false }])
     expect(s.recipes[0].steps).toEqual(['a'])
+  })
+
+  it('drops the model setting of older versions, since every call uses one model', () => {
+    const s = normalize({ version: 2, settings: { apiKey: 'k', model: 'claude-opus-5-5', rulesAnswered: true } })
+    expect(s.settings).toEqual({ apiKey: 'k', rulesAnswered: true })
   })
 
   it('ignores a profile without goals', () => {

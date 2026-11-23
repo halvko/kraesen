@@ -1,17 +1,12 @@
 import { useState } from 'react'
 import { useStore } from '../store'
-import { DEFAULT_MODEL, type Macros, type Profile, sameMacros } from '../types'
+import { type Macros, type Profile, sameMacros } from '../types'
 import { MacroInputs } from './MacroInputs'
 
 // The forms below are used both in Settings and in the first-run sheets on Cook.
 // Each saves on its own; onSaved lets a sheet close afterwards.
 
 const DEFAULT_GOALS: Macros = { protein: 140, carbs: 220, fat: 70, kcal: 2100 }
-
-const MODELS = [
-  { id: 'claude-opus-5-5', label: 'Claude Opus 5.5 (best)' },
-  { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (cheaper)' },
-]
 
 /** A profile with the given changes; the goals step creates it, with no rules or staples yet. */
 const withProfile = (p: Profile | null, change: Partial<Profile>): Profile => ({
@@ -119,9 +114,8 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
   const [apiKey, setApiKey] = useState(state.settings.apiKey)
   const [showKey, setShowKey] = useState(false)
   const [check, setCheck] = useState<Check>({ kind: 'idle' })
-  const model = state.settings.model
   const key = apiKey.trim()
-  // An unchanged key can still be checked, e.g. one saved anyway after a failed check, or after a model change.
+  // An unchanged key can still be checked, e.g. one saved with "Save this key anyway" after a failed check.
   const unchanged = key === state.settings.apiKey
 
   // The key is saved when the check passes, or when the user chooses "Save this key anyway" after a failed check,
@@ -132,7 +126,7 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
     const { checkKey, describeError } = await import('../claude')
     let result: Check
     try {
-      await checkKey(key, model)
+      await checkKey(key)
       result = { kind: 'ok' }
     } catch (e) {
       result = { kind: 'failed', message: describeError(e).message }
@@ -171,22 +165,6 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
           {showKey ? 'Hide' : 'Show'}
         </button>
       </div>
-      <label>
-        <span>Model</span>
-        <select
-          value={model}
-          onChange={(e) => {
-            update((s) => ({ ...s, settings: { ...s.settings, model: e.target.value || DEFAULT_MODEL } }))
-            setCheck({ kind: 'idle' })
-          }}
-        >
-          {MODELS.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-      </label>
       <div className="row">
         <button type="button" onClick={checkAndSave} disabled={!key || check.kind === 'checking' || (unchanged && check.kind === 'ok')}>
           {check.kind === 'checking' ? 'Checking…' : unchanged ? 'Check key' : 'Check and save key'}

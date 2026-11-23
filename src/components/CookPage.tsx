@@ -199,7 +199,6 @@ function Planner({ profile, openSheet, goToKitchen }: PlannerProps) {
     try {
       const r = await generateMeal(
         makeClient(state.settings.apiKey),
-        state.settings.model,
         { target, shopping, wish, rules, staples },
         state.wares,
         (e) => setEvents((prev) => [...prev, e]),

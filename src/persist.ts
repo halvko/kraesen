@@ -1,6 +1,5 @@
 import {
   type AppState,
-  DEFAULT_MODEL,
   emptyState,
   MACRO_KEYS,
   type Macros,
@@ -135,7 +134,6 @@ export function normalize(s: unknown): AppState {
     profile,
     settings: {
       apiKey: str(settings.apiKey) ?? '',
-      model: str(settings.model) || DEFAULT_MODEL,
       // Users of version 1 have already been through Settings, food rules included.
       rulesAnswered: settings.rulesAnswered === true || (fromV1 && profile !== null),
     },
@@ -148,7 +146,7 @@ export function normalize(s: unknown): AppState {
 /** Export everything except the API key. */
 export function exportJson(state: AppState): string {
   const { settings, upgradeNotice: _notice, ...rest } = state
-  return JSON.stringify({ ...rest, settings: { model: settings.model, rulesAnswered: settings.rulesAnswered }, exportedAt: new Date().toISOString() }, null, 2)
+  return JSON.stringify({ ...rest, settings: { rulesAnswered: settings.rulesAnswered }, exportedAt: new Date().toISOString() }, null, 2)
 }
 
 /** Parses an export; throws with a readable message if the file is not one. Keeps this device's API key. */

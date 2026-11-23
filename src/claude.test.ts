@@ -66,7 +66,7 @@ function lastResults(requests: BetaMessageParam[][]) {
 }
 
 const run = (client: Anthropic, shopping: MealRequest['shopping'] = 'few', events: AgentEvent[] = []) =>
-  generateMeal(client, 'claude-opus-5-5', req(shopping), WARES, (e) => events.push(e))
+  generateMeal(client, req(shopping), WARES, (e) => events.push(e))
 
 describe('generateMeal', () => {
   it('pairs every tool_use with a tool_result, errors on unknown tools, and builds the recipe from the chosen solution', async () => {
@@ -149,7 +149,7 @@ describe('generateMeal', () => {
       reply([{ type: 'tool_use', id: 'a', name: 'compute_portions', input: { ingredients: [{ ware_id: 'have1' }] } }]),
       reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: { ...recipe('S1'), extras: [] } }]),
     ])
-    await generateMeal(client, 'claude-opus-5-5', { ...req('few'), ...over }, WARES, () => {})
+    await generateMeal(client, { ...req('few'), ...over }, WARES, () => {})
     return requests[0][0].content as string
   }
 
@@ -177,7 +177,7 @@ describe('generateMeal', () => {
     ])
     const tools: unknown[] = []
     const spy = { beta: { messages: { create: (p: { tools: unknown[] }) => (tools.push(p.tools), client.beta.messages.create(p as never)) } } }
-    const r = await generateMeal(spy as unknown as Anthropic, 'claude-opus-5-5', req('few'), WARES, () => {})
+    const r = await generateMeal(spy as unknown as Anthropic, req('few'), WARES, () => {})
     expect(JSON.stringify(tools[0])).toContain('"enum":["salt","black pepper","water"]')
     const rejected = lastResults([requests[2]])[0]
     expect(rejected.is_error).toBe(true)
@@ -239,7 +239,7 @@ describe('describeError', () => {
   it('offers a key fix only for key and permission errors', () => {
     const cases: [unknown, string, boolean][] = [
       [new Anthropic.AuthenticationError(401, undefined, 'bad key', headers), 'API key was rejected', true],
-      [new Anthropic.PermissionDeniedError(403, undefined, 'no', headers), 'not allowed to use that model', true],
+      [new Anthropic.PermissionDeniedError(403, undefined, 'no', headers), 'not allowed to use Claude Sonnet 5.5', true],
       [new Anthropic.RateLimitError(429, undefined, 'slow', headers), 'Rate limited', false],
       [new Anthropic.APIConnectionError({ message: 'offline' }), 'Could not reach', false],
       [new Anthropic.InternalServerError(500, undefined, 'boom', headers), 'Claude API error 500', false],

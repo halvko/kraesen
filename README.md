@@ -31,7 +31,7 @@ console.anthropic.com (checked with a tiny request), and your first foods.
   "Check what's in" fixes stale stock without leaving the screen. You see each
   portion fit Claude tries, then the recipe, with a To buy list when it uses
   shop foods.
-- **Settings** (the gear): goals, food rules, the API key and model, and a JSON
+- **Settings** (the gear): goals, food rules, the API key, and a JSON
   backup. The key is never exported.
 
 ## How meal planning works

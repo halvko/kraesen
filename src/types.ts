@@ -64,7 +64,6 @@ export interface Profile {
 
 export interface Settings {
   apiKey: string
-  model: string
   /** True once the user has saved or skipped the food rules step of the first-run setup. */
   rulesAnswered: boolean
 }
@@ -100,12 +99,11 @@ export interface AppState {
   upgradeNotice: boolean
 }
 
-export const DEFAULT_MODEL = 'claude-opus-5-5'
 
 export const emptyState = (): AppState => ({
   version: 2,
   profile: null,
-  settings: { apiKey: '', model: DEFAULT_MODEL, rulesAnswered: false },
+  settings: { apiKey: '', rulesAnswered: false },
   wares: [],
   recipes: [],
   upgradeNotice: false,

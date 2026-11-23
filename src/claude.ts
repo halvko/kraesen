@@ -10,6 +10,9 @@ import type {
 import { type PortionRequest, type Solution, solvePortions } from './solver'
 import { isObj, MACRO_KEYS, type MealFoods, mealFoods, type Macros, type Recipe, roundMacro, roundMacros, SHOP_LIMITS, type Shopping, toNonNegative, type Ware } from './types'
 
+/** Every Claude call uses this model. */
+const MODEL = 'claude-sonnet-5-5'
+
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 
 export function makeClient(apiKey: string) {
@@ -19,25 +22,25 @@ export function makeClient(apiKey: string) {
 
 export interface ErrorInfo {
   message: string
-  /** True when the fix is a different API key or model. */
+  /** True when the fix is a different API key. */
   fixKey: boolean
 }
 
-/** Turns an error into a message for the user, and says whether the fix is a different key or model. */
+/** Turns an error into a message for the user, and says whether the fix is a different key. */
 export function describeError(e: unknown): ErrorInfo {
   const info = (message: string, fixKey = false) => ({ message, fixKey })
   if (e instanceof Anthropic.AuthenticationError) return info('The API key was rejected.', true)
-  if (e instanceof Anthropic.PermissionDeniedError) return info('This API key is not allowed to use that model.', true)
+  if (e instanceof Anthropic.PermissionDeniedError) return info('This API key is not allowed to use Claude Sonnet 5.5.', true)
   if (e instanceof Anthropic.RateLimitError) return info('Rate limited by the Claude API. Wait a minute and try again.')
   if (e instanceof Anthropic.APIConnectionError) return info('Could not reach the Claude API. Are you online?')
   if (e instanceof Anthropic.APIError) return info(`Claude API error ${e.status ?? ''}: ${e.message}`)
   return info(e instanceof Error ? e.message : String(e))
 }
 
-/** Sends a one-token request with this key and model. Throws when the key is rejected or the API cannot be reached. */
-export async function checkKey(apiKey: string, model: string): Promise<void> {
+/** Sends a one-token request with this key. Throws when the key is rejected or the API cannot be reached. */
+export async function checkKey(apiKey: string): Promise<void> {
   await makeClient(apiKey).beta.messages.create({
-    model,
+    model: MODEL,
     max_tokens: 1,
     betas: [FALLBACK_BETA],
     fallbacks: 'default',
@@ -110,14 +113,13 @@ export function parseLabelReply(msg: Pick<BetaMessage, 'stop_reason' | 'content'
 
 export async function readNutritionLabel(
   client: Anthropic,
-  model: string,
   imageBase64: string,
   mediaType: 'image/jpeg' | 'image/png',
   signal?: AbortSignal,
 ): Promise<LabelReading> {
   const msg = await client.beta.messages.create(
     {
-      model,
+      model: MODEL,
       max_tokens: 4000,
       betas: [FALLBACK_BETA],
       fallbacks: 'default',
@@ -380,7 +382,6 @@ function parseSubmit(input: unknown, staples: string[]): Parsed<SubmitInput> {
 
 export async function generateMeal(
   client: Anthropic,
-  model: string,
   req: MealRequest,
   wares: Ware[],
   onEvent: (e: AgentEvent) => void,
@@ -437,7 +438,7 @@ export async function generateMeal(
     if (signal?.aborted) throw new Error('Cancelled')
     const response = await client.beta.messages.create(
       {
-        model,
+        model: MODEL,
         max_tokens: 16000,
         betas: [FALLBACK_BETA],
         fallbacks: 'default',
