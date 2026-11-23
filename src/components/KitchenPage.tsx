@@ -111,10 +111,16 @@ export function KitchenPage() {
       )}
       {GROUPS.map((g) => {
         const items = shown.filter((w) => groupOf(w) === g.stock).sort((a, b) => a.name.localeCompare(b.name))
-        // The count is what is in this group now, including foods moved here whose rows stay in their old group.
+        // The count is what is in this group now, including foods moved here.
         const count = shown.filter((w) => w.stock === g.stock).length
         if (items.length === 0 && count === 0 && !g.empty) return null
-        const arrived = count > 0 && items.length === 0 && <p className="hint">Foods moved here show up in this list the next time you open Kitchen.</p>
+        // Foods moved here this visit are counted but keep their rows in their old group.
+        const incoming = count - items.filter((w) => w.stock === g.stock).length
+        const arrived = incoming > 0 && (
+          <p className="hint">
+            {incoming === 1 ? '1 food moved here shows' : `${incoming} foods moved here show`} up in this list the next time you open Kitchen.
+          </p>
+        )
         const title = (
           <h2>
             {STOCK_LABEL[g.stock]} <span className="count">{count}</span>
