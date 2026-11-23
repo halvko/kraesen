@@ -58,7 +58,6 @@ export function KitchenPage() {
         <FoodEditor
           title={mode.title}
           initial={mode.draft}
-          saved={!!id}
           banner={mode.banner}
           onCancel={() => setMode({ kind: 'list' })}
           onSave={(d) => save(id, d)}
@@ -115,8 +114,8 @@ export function KitchenPage() {
         // The count is what is in this group now, including foods moved here.
         const count = shown.filter((w) => w.stock === g.stock).length
         if (items.length === 0 && count === 0 && !g.empty) return null
-        // Foods moved here this visit are counted but keep their rows in their old group.
-        const incoming = count - items.filter((w) => w.stock === g.stock).length
+        // Foods moved here this visit: counted here, but their rows stay in their old group.
+        const incoming = shown.filter((w) => w.stock === g.stock && groupOf(w) !== g.stock).length
         const arrived = incoming > 0 && (
           <p className="hint">
             {incoming === 1 ? '1 food moved here shows' : `${incoming} foods moved here show`} up in this list the next time you open Kitchen.

@@ -14,27 +14,25 @@ export interface FoodDraft {
 
 interface Props {
   initial: FoodDraft
-  /** The food is already saved as `initial`, so Save stays off until something changes. */
-  saved?: boolean
   title: string
   banner?: string
   onSave: (d: FoodDraft) => void
   onCancel: () => void
-  /** Shown only when editing a saved food. */
+  /** Given only when editing a saved food, which also keeps Save off until something changes. */
   onDelete?: () => void
 }
 
-export function FoodEditor({ initial, saved, title, banner, onSave, onCancel, onDelete }: Props) {
+/** The draft as Save writes it: text trimmed, empty optional text left out. */
+const clean = (f: FoodDraft): FoodDraft => ({ ...f, name: f.name.trim(), brand: f.brand?.trim() || undefined, notes: f.notes?.trim() || undefined })
+
+const sameDraft = (a: FoodDraft, b: FoodDraft) =>
+  a.name === b.name && a.brand === b.brand && sameMacros(a.per100, b.per100) && a.stock === b.stock && a.notes === b.notes
+
+export function FoodEditor({ initial, title, banner, onSave, onCancel, onDelete }: Props) {
   const [d, setD] = useState<FoodDraft>(initial)
-  const clean = (f: FoodDraft): FoodDraft => ({ ...f, name: f.name.trim(), notes: f.notes?.trim() || undefined })
-  const valid = d.name.trim().length > 0
-  const changed =
-    !saved ||
-    clean(d).name !== initial.name ||
-    (d.brand ?? '') !== (initial.brand ?? '') ||
-    !sameMacros(d.per100, initial.per100) ||
-    d.stock !== initial.stock ||
-    clean(d).notes !== (initial.notes || undefined)
+  const next = clean(d)
+  const saved = onDelete !== undefined
+  const changed = !saved || !sameDraft(next, clean(initial))
   return (
     <div className="card editor">
       <h2>{title}</h2>
@@ -68,7 +66,7 @@ export function FoodEditor({ initial, saved, title, banner, onSave, onCancel, on
         <input value={d.notes ?? ''} onChange={(e) => setD({ ...d, notes: e.target.value })} placeholder="e.g. very ripe, use soon" />
       </label>
       <div className="row">
-        <button type="button" disabled={!valid || !changed} onClick={() => onSave(clean(d))}>
+        <button type="button" disabled={!next.name || !changed} onClick={() => onSave(next)}>
           Save food
         </button>
         <button type="button" className="secondary" onClick={onCancel}>

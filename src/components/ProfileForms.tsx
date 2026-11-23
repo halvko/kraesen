@@ -38,8 +38,9 @@ export function GoalsForm({ onSaved }: { onSaved?: () => void }) {
   const [note, flash] = useSavedNote()
   const derivedKcal = Math.round(goals.protein * 4 + goals.carbs * 4 + goals.fat * 9)
   // Before the first save there is no profile, so the suggested goals can be saved as they are.
+  const next = { name: name.trim(), dailyGoals: goals }
   const { profile } = state
-  const changed = !profile || name.trim() !== profile.name || !sameMacros(goals, profile.dailyGoals)
+  const changed = !profile || next.name !== profile.name || !sameMacros(next.dailyGoals, profile.dailyGoals)
   return (
     <>
       <label>
@@ -56,7 +57,7 @@ export function GoalsForm({ onSaved }: { onSaved?: () => void }) {
           type="button"
           disabled={!changed}
           onClick={() => {
-            update((s) => ({ ...s, profile: withProfile(s.profile, { name: name.trim(), dailyGoals: goals }) }))
+            update((s) => ({ ...s, profile: withProfile(s.profile, next) }))
             flash('Saved.')
             onSaved?.()
           }}
@@ -73,12 +74,13 @@ export function RulesForm({ onSaved }: { onSaved?: () => void }) {
   const { state, update } = useStore()
   const [rules, setRules] = useState(state.profile?.foodRules ?? '')
   const [note, flash] = useSavedNote()
+  const text = rules.trim()
   // Rules live on the profile, which the goals step creates; until then there is nowhere to keep them.
   if (!state.profile) return <p className="hint">Save your daily goals first.</p>
-  const save = (text: string) => {
+  const save = (value: string) => {
     update((s) => ({
       ...s,
-      profile: s.profile && { ...s.profile, foodRules: text.trim() },
+      profile: s.profile && { ...s.profile, foodRules: value },
       settings: { ...s.settings, rulesAnswered: true },
     }))
     flash('Saved.')
@@ -96,10 +98,10 @@ export function RulesForm({ onSaved }: { onSaved?: () => void }) {
         />
       </label>
       <div className="row">
-        <button type="button" disabled={state.settings.rulesAnswered && rules.trim() === state.profile.foodRules} onClick={() => save(rules)}>
+        <button type="button" disabled={state.settings.rulesAnswered && text === state.profile.foodRules} onClick={() => save(text)}>
           Save rules
         </button>
-        {!state.settings.rulesAnswered && !rules.trim() && (
+        {!state.settings.rulesAnswered && !text && (
           <button type="button" className="secondary" onClick={() => save('')}>
             I have none
           </button>
@@ -118,11 +120,13 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
   const [showKey, setShowKey] = useState(false)
   const [check, setCheck] = useState<Check>({ kind: 'idle' })
   const model = state.settings.model
+  const key = apiKey.trim()
+  // An unchanged key can still be checked, e.g. one saved anyway after a failed check, or after a model change.
+  const unchanged = key === state.settings.apiKey
 
   // The key is saved when the check passes, or when the user chooses "Save this key anyway" after a failed check,
   // so a network hiccup never blocks setup. Saving comes after the check, because it can finish setup and close this form.
   const checkAndSave = async () => {
-    const key = apiKey.trim()
     setCheck({ kind: 'checking' })
     // The Claude SDK is loaded on first use to keep the initial download small.
     const { checkKey, describeError } = await import('../claude')
@@ -141,7 +145,7 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
   }
 
   const saveAnyway = () => {
-    update((s) => ({ ...s, settings: { ...s.settings, apiKey: apiKey.trim() } }))
+    update((s) => ({ ...s, settings: { ...s.settings, apiKey: key } }))
     onSaved?.()
   }
 
@@ -169,7 +173,13 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
       </div>
       <label>
         <span>Model</span>
-        <select value={model} onChange={(e) => update((s) => ({ ...s, settings: { ...s.settings, model: e.target.value || DEFAULT_MODEL } }))}>
+        <select
+          value={model}
+          onChange={(e) => {
+            update((s) => ({ ...s, settings: { ...s.settings, model: e.target.value || DEFAULT_MODEL } }))
+            setCheck({ kind: 'idle' })
+          }}
+        >
           {MODELS.map((m) => (
             <option key={m.id} value={m.id}>
               {m.label}
@@ -178,8 +188,8 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
         </select>
       </label>
       <div className="row">
-        <button type="button" onClick={checkAndSave} disabled={!apiKey.trim() || apiKey.trim() === state.settings.apiKey || check.kind === 'checking'}>
-          {check.kind === 'checking' ? 'Checking…' : 'Check and save key'}
+        <button type="button" onClick={checkAndSave} disabled={!key || check.kind === 'checking' || (unchanged && check.kind === 'ok')}>
+          {check.kind === 'checking' ? 'Checking…' : unchanged ? 'Check key' : 'Check and save key'}
         </button>
         {check.kind === 'ok' && <span className="hint ok-note">The key works. Saved.</span>}
       </div>
