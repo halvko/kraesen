@@ -306,9 +306,9 @@ describe('macro lookup', () => {
     ...over,
   })
   const submit = (over: Record<string, unknown> = {}, id = 'u1') => ({ type: 'tool_use', id, name: 'submit_macros', input: input(over) }) as Block
-  const parse = (over: Record<string, unknown> = {}, urls: string[] = [FRIDA]) => parseEstimate(input(over), 'tomat', new Set(urls), new Set(), 1)
-  const lookupOf = (r: ReturnType<typeof parse>) => (r.ok && r.value.found ? r.value.lookup : undefined)
-  const errorOf = (r: ReturnType<typeof parse>) => (r.ok ? undefined : r.error)
+  const parse = (over: Record<string, unknown> = {}, urls: string[] = [FRIDA]) => parseEstimate(input(over), 'tomat', new Set(urls), 1)
+  const lookupOf = (r: ReturnType<typeof parse>) => (r.ok && !r.energyDoubt && r.value.found ? r.value.lookup : undefined)
+  const errorOf = (r: ReturnType<typeof parse>) => (r.ok ? r.energyDoubt?.message : r.error)
 
   it('reads macros per 100 g, rounded, with the source and note', () => {
     expect(lookupOf(parse())).toEqual({
@@ -348,13 +348,18 @@ describe('macro lookup', () => {
     expect(errorOf(parse({ protein_g: 20, kcal: 0 }))).toMatch(/does not fit/)
   })
 
-  it('accepts energy that does not fit when Claude sends the same numbers again', () => {
+  it('questions energy that does not fit once, and accepts the same numbers sent again', async () => {
     // Xylitol: 100 g carbohydrate (polyols) and 240 kcal.
     const xylitol = { protein_g: 0, carbs_g: 100, fat_g: 0, fibre_g: 0, kcal: 240 }
-    const queried = new Set<string>()
-    expect(parseEstimate(input(xylitol), 'xylitol', new Set(), queried).ok).toBe(false)
-    expect(parseEstimate(input({ ...xylitol, kcal: 250 }), 'xylitol', new Set(), queried).ok).toBe(false)
-    expect(parseEstimate(input(xylitol), 'xylitol', new Set(), queried).ok).toBe(true)
+    const { client, requests } = scripted([
+      reply([submit(xylitol, 'a')]),
+      reply([submit({ ...xylitol, kcal: 250 }, 'b')]),
+      reply([submit(xylitol, 'c')]),
+    ])
+    const r = await estimateMacros(client, 'xylitol')
+    expect(r.found && r.lookup.per100.kcal).toBe(240)
+    const errors = requests.slice(1).map((req) => (req.at(-1)!.content as { is_error?: boolean }[])[0].is_error)
+    expect(errors).toEqual([true, true])
   })
 
   it('rejects a missing number instead of reading it as 0', () => {
@@ -372,8 +377,8 @@ describe('macro lookup', () => {
   })
 
   it('reports a text that is not a food without checking its numbers', () => {
-    expect(parseEstimate({ ...input(), found: false }, 'asdf', new Set())).toEqual({ ok: true, value: { found: false } })
-    expect(parseEstimate({ ...input({ protein_g: 90, carbs_g: 90 }), found: false }, 'asdf', new Set())).toEqual({ ok: true, value: { found: false } })
+    expect(parseEstimate({ ...input(), found: false }, 'asdf', new Set(), 1)).toEqual({ ok: true, value: { found: false } })
+    expect(parseEstimate({ ...input({ protein_g: 90, carbs_g: 90 }), found: false }, 'asdf', new Set(), 1)).toEqual({ ok: true, value: { found: false } })
   })
 
   it('normalizes the cache key from what the user typed', async () => {

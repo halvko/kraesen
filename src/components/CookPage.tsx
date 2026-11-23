@@ -172,6 +172,7 @@ function Planner({ profile, openSheet, goToKitchen }: PlannerProps) {
   const [error, setError] = useState<ErrorInfo | null>(null)
   const [saved, setSaved] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  const makeButton = useRef<HTMLButtonElement>(null)
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
@@ -325,7 +326,7 @@ function Planner({ profile, openSheet, goToKitchen }: PlannerProps) {
             </li>
           </ul>
 
-          <button type="button" onClick={run} disabled={foods.all.length === 0}>
+          <button ref={makeButton} type="button" onClick={run} disabled={foods.all.length === 0}>
             Make a meal
           </button>
           {foods.all.length === 0 && (
@@ -361,7 +362,11 @@ function Planner({ profile, openSheet, goToKitchen }: PlannerProps) {
         </section>
       )}
 
-      {error && <ClaudeError className="card" error={error} onKeySaved={() => setError(null)} />}
+      {error && <ClaudeError className="card" error={error} onKeySaved={() => {
+            setError(null)
+            makeButton.current?.focus()
+          }}
+        />}
 
       {recipe && (
         <section className="card">

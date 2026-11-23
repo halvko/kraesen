@@ -41,8 +41,10 @@ console.anthropic.com (checked with a tiny request), and your first foods.
 search and web fetch tools and asks it to find the food in Frida, then USDA
 FoodData Central or another national database, then a producer's page. Claude
 answers through a `submit_macros` tool; the app sends back numbers that cannot
-be right (more than 100 g per 100 g, or energy that does not fit the macros)
-and links a source only if Claude saw that URL during the lookup. The user
+be right (more than 100 g per 100 g, or a missing number), asks once about
+energy that does not fit the macros (the same numbers sent again are accepted,
+as for xylitol), and links a source only if Claude saw that URL during the
+lookup. The user
 checks the numbers before saving.
 
 Each result is kept on the device under the normalized name, so the same food

@@ -5,7 +5,7 @@ import { Sheet } from './Sheet'
 
 interface Props {
   error: ErrorInfo
-  /** Called after a new key is saved from the sheet; the caller clears the error and moves focus on. */
+  /** Called after a new key is saved from the sheet. The caller should clear the error and focus the action to retry. */
   onKeySaved: () => void
   className?: string
 }
