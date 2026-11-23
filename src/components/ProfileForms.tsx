@@ -147,7 +147,7 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
   return (
     <>
       <p className="hint">
-        Used to read nutrition labels and plan meals. It is stored only in this browser and sent only to api.anthropic.com. Get
+        Used to read nutrition labels, look up macros and plan meals. It is stored only in this browser and sent only to api.anthropic.com. Get
         one at console.anthropic.com.
       </p>
       <div className="row">

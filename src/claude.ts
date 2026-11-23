@@ -8,7 +8,7 @@ import type {
   BetaToolUseBlock,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { type PortionRequest, type Solution, solvePortions } from './solver'
-import { type FoodLookup, isObj, MACRO_KEYS, normalizeQuery, type SourceRef, type MealFoods, mealFoods, type Macros, type Recipe, roundMacro, roundMacros, SHOP_LIMITS, type Shopping, toNonNegative, type Ware } from './types'
+import { type FoodLookup, isObj, isWebUrl, MACRO_KEYS, normalizeQuery, type SourceRef, type MealFoods, mealFoods, type Macros, type Recipe, roundMacro, roundMacros, SHOP_LIMITS, type Shopping, toNonNegative, type Ware } from './types'
 
 /** Every Claude call uses this model. */
 const MODEL = { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }
@@ -33,6 +33,9 @@ export function describeError(e: unknown): ErrorInfo {
   if (e instanceof Anthropic.PermissionDeniedError) return info(`This API key is not allowed to use ${MODEL.label}.`, true)
   if (e instanceof Anthropic.RateLimitError) return info('Rate limited by the Claude API. Wait a minute and try again.')
   if (e instanceof Anthropic.APIConnectionError) return info('Could not reach the Claude API. Are you online?')
+  if (e instanceof Anthropic.APIError && /web.?(search|fetch)/i.test(e.message)) {
+    return info(`Claude API error ${e.status ?? ''}: ${e.message} Web search may be turned off for this key's organization in the Claude Console.`)
+  }
   if (e instanceof Anthropic.APIError) return info(`Claude API error ${e.status ?? ''}: ${e.message}`)
   return info(e instanceof Error ? e.message : String(e))
 }
@@ -153,20 +156,21 @@ export async function readNutritionLabel(
 const ESTIMATE_TOOL: BetaTool = {
   name: 'submit_macros',
   description:
-    'Submit the macronutrients per 100 g for the food, with the source they came from. Call this exactly once, ' +
-    'after searching. If the text is not a food, set found to false and use 0 for the numbers.',
+    'Submit the macronutrients per 100 g for the food, with the source they came from. Call this once, after ' +
+    'searching. If the text is not a food, set found to false and use 0 and empty strings for the rest.',
   strict: true,
   input_schema: {
     type: 'object',
     additionalProperties: false,
-    required: ['found', 'name', 'protein_g', 'carbs_g', 'fat_g', 'kcal', 'source_name', 'source_url', 'note'],
+    required: ['found', 'protein_g', 'carbs_g', 'fat_g', 'fibre_g', 'alcohol_g', 'kcal', 'source_name', 'source_url', 'note'],
     properties: {
       found: { type: 'boolean', description: 'False if the text does not describe a food or drink.' },
-      name: { type: 'string', description: 'A short, plain name for the food in the language the user wrote, e.g. "Tomater".' },
       protein_g: { type: 'number', description: 'Protein per 100 g.' },
       carbs_g: { type: 'number', description: 'Available carbohydrate per 100 g, fibre NOT included.' },
       fat_g: { type: 'number', description: 'Total fat per 100 g.' },
-      kcal: { type: 'number', description: 'Energy in kcal per 100 g.' },
+      fibre_g: { type: 'number', description: 'Dietary fibre per 100 g; 0 if unknown.' },
+      alcohol_g: { type: 'number', description: 'Alcohol per 100 g; 0 for most foods.' },
+      kcal: { type: 'number', description: 'Energy in kcal per 100 g, as the source gives it.' },
       source_name: {
         type: 'string',
         description: 'The database or site and the entry used, e.g. "Frida (DTU Fødevareinstituttet): Tomat, rå".',
@@ -196,56 +200,61 @@ export const LOOKUP_SYSTEM =
   '- Energy in kcal; convert from kJ by dividing by 4.184 if only kJ is given.\n' +
   '- Then call submit_macros once. source_url must be a page you actually saw in a search result or fetched.'
 
-export interface MacroEstimate {
-  found: boolean
-  lookup: FoodLookup
-}
+export type MacroEstimate = { found: false } | { found: true; lookup: FoodLookup }
 
-/** Every URL Claude saw in a search result or fetched while answering. */
+/** Every URL Claude saw in a search result or fetched while answering, without a trailing slash. */
 function seenUrls(content: BetaMessage['content'][]): Set<string> {
   const urls = new Set<string>()
   for (const blocks of content) {
     for (const b of blocks) {
-      if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) b.content.forEach((r) => urls.add(r.url))
-      if (b.type === 'web_fetch_tool_result' && b.content.type === 'web_fetch_result') urls.add(b.content.url)
+      if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) b.content.forEach((r) => urls.add(trimSlash(r.url)))
+      if (b.type === 'web_fetch_tool_result' && b.content.type === 'web_fetch_result') urls.add(trimSlash(b.content.url))
     }
   }
   return urls
 }
 
-const sameUrl = (a: string, b: string) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '')
+const trimSlash = (u: string) => u.replace(/\/+$/, '')
+
+/** Energy from the macros (Atwater factors). */
+export const atwaterKcal = (m: { protein: number; carbs: number; fat: number; fibre: number; alcohol: number }) =>
+  4 * m.protein + 4 * m.carbs + 9 * m.fat + 2 * m.fibre + 7 * m.alcohol
 
 /**
- * Reads submit_macros input into a lookup, or says what was wrong. The source URL is kept only
- * when Claude saw it during this lookup, so a made-up link is never shown as the source.
+ * Reads submit_macros input into a lookup, or says what was wrong. Numbers that cannot be right
+ * (more than 100 g per 100 g, or energy that does not fit the macros, such as kJ given as kcal)
+ * go back to Claude. The source URL is kept only when Claude saw it during this lookup, so a
+ * made-up link is never shown as the source.
  */
 export function parseEstimate(input: unknown, query: string, urls: Set<string>, now = Date.now()): Parsed<MacroEstimate> {
   if (!isObj(input)) return fail('submit_macros input must be an object')
-  const found = input.found === true
-  const [protein, carbs, fat, kcal] = [input.protein_g, input.carbs_g, input.fat_g, input.kcal].map(toNonNegative)
-  if (protein === undefined || carbs === undefined || fat === undefined || kcal === undefined) {
-    return fail('protein_g, carbs_g, fat_g and kcal must be non-negative numbers')
+  if (input.found !== true) return { ok: true, value: { found: false } }
+  const [protein, carbs, fat, fibre, alcohol, kcal] = [input.protein_g, input.carbs_g, input.fat_g, input.fibre_g, input.alcohol_g, input.kcal].map(
+    (v) => toNonNegative(v ?? 0),
+  )
+  if (protein === undefined || carbs === undefined || fat === undefined || fibre === undefined || alcohol === undefined || kcal === undefined) {
+    return fail('All numbers must be non-negative')
   }
-  if (found && protein + carbs + fat > 100.5) return fail('Protein, carbs and fat add up to more than 100 g per 100 g. Check the numbers.')
-  const sourceName = typeof input.source_name === 'string' ? input.source_name.trim() : ''
-  if (found && !sourceName) return fail('source_name must name where the numbers came from')
+  if (protein + carbs + fat + fibre + alcohol > 100.5) return fail('The macros add up to more than 100 g per 100 g. Check the numbers.')
+  const expected = atwaterKcal({ protein, carbs, fat, fibre, alcohol })
+  if (Math.abs(kcal - expected) > Math.max(15, 0.2 * expected)) {
+    return fail(
+      `kcal ${kcal} does not fit the macros, which give about ${Math.round(expected)} kcal. ` +
+        'Check that kcal is not kJ, and that fibre and alcohol are filled in, then submit again.',
+    )
+  }
+  const name = typeof input.source_name === 'string' ? input.source_name.trim() : ''
+  if (!name) return fail('source_name must name where the numbers came from')
   const rawUrl = typeof input.source_url === 'string' ? input.source_url.trim() : ''
-  const url = /^https?:\/\//i.test(rawUrl) && [...urls].some((u) => sameUrl(u, rawUrl)) ? rawUrl : undefined
-  const source: SourceRef = url ? { name: sourceName, url } : { name: sourceName || 'Claude' }
-  const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : query.trim()
+  const note = typeof input.note === 'string' ? input.note.trim() : ''
+  const source: SourceRef = { name }
+  if (isWebUrl(rawUrl) && urls.has(trimSlash(rawUrl))) source.url = rawUrl
+  if (note) source.note = note
   return {
     ok: true,
     value: {
-      found,
-      lookup: {
-        key: normalizeQuery(query),
-        query: query.trim(),
-        name,
-        per100: roundMacros({ protein, carbs, fat, kcal }),
-        source,
-        note: typeof input.note === 'string' ? input.note.trim() : '',
-        createdAt: now,
-      },
+      found: true,
+      lookup: { key: normalizeQuery(query), query: query.trim(), per100: roundMacros({ protein, carbs, fat, kcal }), source, createdAt: now },
     },
   }
 }
@@ -280,28 +289,23 @@ export async function estimateMacros(client: Anthropic, query: string, signal?: 
     // The server's search loop paused; sending the conversation back resumes it.
     if (response.stop_reason === 'pause_turn') continue
 
-    const submit = response.content.find((b): b is BetaToolUseBlock => b.type === 'tool_use' && b.name === 'submit_macros')
-    const others = response.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use' && b.name !== 'submit_macros')
-    if (!submit) {
-      if (others.length === 0) {
-        messages.push({ role: 'user', content: 'Please finish by calling submit_macros.' })
-      } else {
-        messages.push({
-          role: 'user',
-          content: others.map((tu) => ({ type: 'tool_result' as const, tool_use_id: tu.id, content: `Unknown tool ${tu.name}`, is_error: true })),
-        })
-      }
+    const toolUses = response.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use')
+    if (toolUses.length === 0) {
+      messages.push({ role: 'user', content: 'Please finish by calling submit_macros.' })
       continue
     }
-    const parsed = parseEstimate(submit.input, query, seenUrls(contents))
-    if (parsed.ok) return parsed.value
-    messages.push({
-      role: 'user',
-      content: [
-        { type: 'tool_result', tool_use_id: submit.id, content: parsed.error, is_error: true },
-        ...others.map((tu) => ({ type: 'tool_result' as const, tool_use_id: tu.id, content: `Unknown tool ${tu.name}`, is_error: true })),
-      ],
-    })
+    // Every tool call gets a result, even when Claude called submit_macros more than once.
+    const results: BetaToolResultBlockParam[] = []
+    for (const tu of toolUses) {
+      if (tu.name !== 'submit_macros') {
+        results.push({ type: 'tool_result', tool_use_id: tu.id, content: `Unknown tool ${tu.name}`, is_error: true })
+        continue
+      }
+      const parsed = parseEstimate(tu.input, query, seenUrls(contents))
+      if (parsed.ok) return parsed.value
+      results.push({ type: 'tool_result', tool_use_id: tu.id, content: parsed.error, is_error: true })
+    }
+    messages.push({ role: 'user', content: results })
   }
   throw new Error('Claude did not finish the lookup. Please try again.')
 }

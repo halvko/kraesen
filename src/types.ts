@@ -42,30 +42,23 @@ export type WareSource = 'custom' | 'openfoodfacts' | 'label' | 'lookup'
 
 export const WARE_SOURCES: WareSource[] = ['custom', 'openfoodfacts', 'label', 'lookup']
 
-/** Where a food's macros came from, shown to the user. */
+/** Where a food's looked-up macros came from, shown to the user. */
 export interface SourceRef {
   /** E.g. "Frida (DTU Fødevareinstituttet): Tomat, rå". */
   name: string
-  /** A page Claude actually read during the lookup; absent when it could not be checked. */
+  /** A page Claude actually saw during the lookup; absent when it could not be checked. */
   url?: string
+  /** One sentence on what was assumed, e.g. "Raw, edible part". */
+  note?: string
 }
 
-/**
- * One macro lookup by Claude, kept so the same food is never looked up twice. Keyed by
- * the normalized query, and kept free of anything personal, so the list can later seed a
- * shared list on a backend.
- */
+/** One macro lookup by Claude, kept on the device so a name is answered from here the next time. */
 export interface FoodLookup {
-  /** normalizeQuery(query). */
   key: string
   /** What the user typed, e.g. "hjemmedyrkede tomater". */
   query: string
-  /** A short name for the food in the user's language, e.g. "Tomater". */
-  name: string
   per100: Macros
   source: SourceRef
-  /** One sentence on what was assumed, e.g. "Raw, edible part". */
-  note: string
   createdAt: number
 }
 
@@ -78,6 +71,20 @@ export function normalizeQuery(q: string): string {
     .trim()
 }
 
+export const findLookup = (lookups: FoodLookup[], query: string): FoodLookup | undefined => {
+  const key = normalizeQuery(query)
+  return lookups.find((l) => l.key === key)
+}
+
+/** The lookups with these added in front, replacing any older ones for the same name. */
+export function addLookups(lookups: FoodLookup[], added: FoodLookup[]): FoodLookup[] {
+  const keys = new Set(added.map((l) => l.key))
+  return [...added, ...lookups.filter((l) => !keys.has(l.key))]
+}
+
+/** True for an absolute http(s) link: the only kind the app shows or stores. */
+export const isWebUrl = (u: string) => /^https?:\/\/\S+$/i.test(u)
+
 export interface Ware {
   id: string
   name: string
@@ -88,8 +95,8 @@ export interface Ware {
   per100: Macros
   stock: Stock
   notes?: string
-  /** Set for foods whose macros Claude looked up. */
-  ref?: SourceRef
+  /** Set for foods whose macros Claude looked up, until they are edited by hand. */
+  sourceRef?: SourceRef
   createdAt: number
 }
 

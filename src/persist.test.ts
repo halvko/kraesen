@@ -163,25 +163,36 @@ describe('normalize', () => {
 })
 
 describe('macro lookups', () => {
-  const lookup = (query: string, url = 'https://frida.fooddata.dk/food/1') => ({
-    key: 'ignored',
+  const lookup = (query: string, url = 'https://frida.fooddata.dk/food/1', createdAt = 1) => ({
+    key: 'stale',
     query,
-    name: 'Tomater',
     per100: { protein: 0.7, carbs: 2.9, fat: 0.2, kcal: 18 },
-    source: { name: 'Frida', url },
-    note: '',
-    createdAt: 1,
+    source: { name: 'Frida', url, note: 'Raw.' },
+    createdAt,
   })
 
-  it('re-keys lookups by the normalized query, drops repeats, and drops links that are not http(s)', () => {
-    const s = normalize({ version: 2, wares: [], lookups: [lookup('Tomater!'), lookup(' tomater '), lookup('Kål', 'javascript:alert(1)')] })
-    expect(s.lookups.map((l) => l.key)).toEqual(['tomater', 'kål'])
-    expect(s.lookups[1].source).toEqual({ name: 'Frida' })
+  it('re-keys lookups from the query and keeps the first of a repeated name', () => {
+    const s = normalize({ version: 2, wares: [], lookups: [lookup('Tomater!', undefined, 2), lookup(' tomater ', undefined, 1)] })
+    expect(s.lookups.map((l) => [l.key, l.createdAt])).toEqual([['tomater', 2]])
   })
 
-  it('exports lookups and keeps this device’s lookups on import', () => {
-    const mine = { ...emptyState(), lookups: normalize({ lookups: [lookup('rugbrød')] }).lookups }
-    const text = exportJson({ ...sample(), lookups: normalize({ lookups: [lookup('tomater')] }).lookups })
-    expect(importJson(text, mine).lookups.map((l) => l.key)).toEqual(['tomater', 'rugbrød'])
+  it('drops source links that are not web links', () => {
+    const s = normalize({ version: 2, wares: [], lookups: [lookup('Kål', 'javascript:alert(1)')] })
+    expect(s.lookups[0].source).toEqual({ name: 'Frida', note: 'Raw.' })
+  })
+
+  it('round-trips a looked-up food with its source', () => {
+    const food = { ...sample().wares[0], source: 'lookup' as const, sourceRef: { name: 'Frida', url: 'https://frida.fooddata.dk/food/1', note: 'Raw.' } }
+    const next = importJson(exportJson({ ...sample(), wares: [food] }), emptyState())
+    expect(next.wares).toEqual([food])
+  })
+
+  it('keeps this device’s lookups on import, and the imported one wins for a name in both', () => {
+    const mine = { ...emptyState(), lookups: normalize({ lookups: [lookup('rugbrød'), lookup('tomater', undefined, 5)] }).lookups }
+    const text = exportJson({ ...sample(), lookups: normalize({ lookups: [lookup('tomater', undefined, 9)] }).lookups })
+    expect(importJson(text, mine).lookups.map((l) => [l.key, l.createdAt])).toEqual([
+      ['tomater', 9],
+      ['rugbrød', 1],
+    ])
   })
 })

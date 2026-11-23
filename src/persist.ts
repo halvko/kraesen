@@ -4,7 +4,9 @@ import {
   MACRO_KEYS,
   type Macros,
   type Profile,
+  addLookups,
   type FoodLookup,
+  isWebUrl,
   normalizeQuery,
   type Recipe,
   type RecipeIngredient,
@@ -47,34 +49,29 @@ function stockFromV1(list: unknown, status: unknown): { stock: Stock; frozenNote
   return { stock: 'off', frozenNote: false }
 }
 
-/** A source reference; a url is kept only if it is an http(s) link, so a backup can't plant a javascript: link. */
+/** A source reference; a url is kept only if it is a web link, so a backup can't plant a javascript: link. */
 function readRef(v: unknown): SourceRef | undefined {
   if (!isObj(v)) return undefined
   const name = str(v.name)?.trim()
   if (!name) return undefined
   const url = str(v.url)
-  return /^https?:\/\//i.test(url ?? '') ? { name, url } : { name }
+  const note = str(v.note)?.trim() || undefined
+  return { name, ...(url && isWebUrl(url) ? { url } : {}), ...(note ? { note } : {}) }
 }
 
 function readLookup(v: unknown): FoodLookup | null {
   if (!isObj(v)) return null
   const query = str(v.query)?.trim()
-  const name = str(v.name)?.trim()
   const source = readRef(v.source)
-  if (!query || !name || !source) return null
-  return { key: normalizeQuery(query), query, name, per100: readMacros(v.per100), source, note: str(v.note) ?? '', createdAt: nonNegative(v.createdAt) }
+  const key = query && normalizeQuery(query)
+  if (!query || !key || !source) return null
+  return { key, query, per100: readMacros(v.per100), source, createdAt: nonNegative(v.createdAt) }
 }
 
-/** Lookups without repeats of the same key; the first (newest) one wins. */
-export function cleanLookups(v: unknown): FoodLookup[] {
-  const seen = new Set<string>()
-  return (Array.isArray(v) ? v : [])
-    .map(readLookup)
-    .filter((l): l is FoodLookup => {
-      if (!l || !l.key || seen.has(l.key)) return false
-      seen.add(l.key)
-      return true
-    })
+/** Stored lookups, re-keyed from their query; for a name that repeats, the first one wins. */
+function readLookups(v: unknown): FoodLookup[] {
+  const read = (Array.isArray(v) ? v : []).map(readLookup).filter((l): l is FoodLookup => l !== null)
+  return read.reduceRight<FoodLookup[]>((acc, l) => addLookups(acc, [l]), [])
 }
 
 function readWare(v: unknown, fromV1: boolean): Ware | null {
@@ -100,7 +97,7 @@ function readWare(v: unknown, fromV1: boolean): Ware | null {
     per100: readMacros(v.per100),
     stock,
     notes,
-    ref: readRef(v.ref),
+    sourceRef: readRef(v.sourceRef),
     createdAt: nonNegative(v.createdAt),
   }
 }
@@ -173,7 +170,7 @@ export function normalize(s: unknown): AppState {
     },
     wares,
     recipes: list(s.recipes, readRecipe),
-    lookups: cleanLookups(s.lookups),
+    lookups: readLookups(s.lookups),
     upgradeNotice: fromV1 ? wares.length > 0 : s.upgradeNotice === true,
   }
 }
@@ -197,8 +194,8 @@ export function importJson(text: string, current: AppState): AppState {
   }
   const next = normalize(parsed)
   next.settings.apiKey = current.settings.apiKey
-  // Lookups are a cache, not the user's data: keep this device's too, so an import never makes the app look foods up again.
-  next.lookups = cleanLookups([...next.lookups, ...current.lookups])
+  // Lookups are a cache: keep this device's too, with the imported one winning for a name in both.
+  next.lookups = addLookups(current.lookups, next.lookups)
   next.upgradeNotice ||= current.upgradeNotice
   return next
 }

@@ -96,7 +96,7 @@ export function KitchenPage() {
               kind: 'edit',
               title: 'Add food',
               draft: { name: '', source: 'custom', per100: zeroMacros(), stock: 'home' },
-              banner: 'Type a name, then let Claude look up the macros, or type them per 100 g yourself.',
+              banner: 'Type a name and tap Look up macros, or type the macros per 100 g yourself.',
             })
           }
         >

@@ -805,3 +805,10 @@ label > span.field-label {
 .source-line small {
   display: block;
 }
+
+.lookup .error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
