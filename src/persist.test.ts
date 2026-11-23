@@ -85,4 +85,8 @@ describe('normalize', () => {
   it('reads a profile saved before food preferences existed', () => {
     expect(normalize({ profile: { dailyGoals: { protein: 1 } } }).profile?.foodPreferences).toBe('')
   })
+
+  it('trims food preferences on load', () => {
+    expect(normalize({ profile: { dailyGoals: {}, foodPreferences: '  no sweeteners  ' } }).profile?.foodPreferences).toBe('no sweeteners')
+  })
 })

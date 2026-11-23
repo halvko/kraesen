@@ -80,7 +80,7 @@ function readRecipe(v: unknown): Recipe | null {
 
 function readProfile(v: unknown): Profile | null {
   if (!isObj(v) || !isObj(v.dailyGoals)) return null
-  return { name: str(v.name) ?? '', dailyGoals: readMacros(v.dailyGoals), foodPreferences: str(v.foodPreferences) ?? '' }
+  return { name: str(v.name) ?? '', dailyGoals: readMacros(v.dailyGoals), foodPreferences: str(v.foodPreferences)?.trim() ?? '' }
 }
 
 export function normalize(s: unknown): AppState {

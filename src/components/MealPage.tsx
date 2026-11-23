@@ -16,7 +16,7 @@ const scale = (m: Macros, f: number): Macros => Object.fromEntries(MACRO_KEYS.ma
 export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void; goToWares: () => void }) {
   const { state, update } = useStore()
   const daily = state.profile?.dailyGoals
-  const preferences = state.profile?.foodPreferences.trim() ?? ''
+  const preferences = state.profile?.foodPreferences ?? ''
   const [share, setShare] = useState(1 / 3)
   const [target, setTarget] = useState<Macros>(() => scale(daily ?? { protein: 0, carbs: 0, fat: 0, kcal: 0 }, 1 / 3))
   const [willingness, setWillingness] = useState<BuyWillingness>('some')
