@@ -8,7 +8,7 @@ import type {
   BetaToolUseBlock,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { type PortionRequest, type Solution, solvePortions } from './solver'
-import { isObj, MACRO_KEYS, type Macros, offered, type Recipe, roundMacro, roundMacros, toNonNegative, type Ware } from './types'
+import { isObj, MACRO_KEYS, type MealFoods, mealFoods, type Macros, type Recipe, roundMacro, roundMacros, SHOP_LIMITS, type Shopping, toNonNegative, type Ware } from './types'
 
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 
@@ -19,13 +19,13 @@ export function makeClient(apiKey: string) {
 
 export interface ErrorInfo {
   message: string
-  /** True when the user should fix their API key or model in Settings. */
-  fixInSettings: boolean
+  /** True when the fix is a different API key or model. */
+  fixKey: boolean
 }
 
-/** Turns an error into a message for the user, and says whether the fix is in Settings. */
+/** Turns an error into a message for the user, and says whether the fix is a different key or model. */
 export function describeError(e: unknown): ErrorInfo {
-  const info = (message: string, fixInSettings = false) => ({ message, fixInSettings })
+  const info = (message: string, fixKey = false) => ({ message, fixKey })
   if (e instanceof Anthropic.AuthenticationError) return info('The API key was rejected.', true)
   if (e instanceof Anthropic.PermissionDeniedError) return info('This API key is not allowed to use that model.', true)
   if (e instanceof Anthropic.RateLimitError) return info('Rate limited by the Claude API. Wait a minute and try again.')
@@ -34,7 +34,7 @@ export function describeError(e: unknown): ErrorInfo {
   return info(e instanceof Error ? e.message : String(e))
 }
 
-/** Sends the smallest possible request, so the user learns at setup whether the key works. Throws like any call. */
+/** Sends a one-token request with this key and model. Throws, as any Claude call does, when the key is rejected or the API cannot be reached. */
 export async function checkKey(apiKey: string, model: string): Promise<void> {
   await makeClient(apiKey).beta.messages.create({
     model,
@@ -148,13 +148,6 @@ export async function readNutritionLabel(
 // Meal generation agent
 // ---------------------------------------------------------------------------
 
-/** How much shopping a meal may need: none, a couple of different foods, or any number. */
-export type Shopping = 'none' | 'few' | 'any'
-
-export const SHOP_LIMITS: Record<Shopping, number> = { none: 0, few: 2, any: Infinity }
-
-export const SHOPPING_LABEL: Record<Shopping, string> = { none: 'Only what I have', few: 'A couple of things', any: 'Shop freely' }
-
 export interface MealRequest {
   target: Macros
   shopping: Shopping
@@ -176,7 +169,7 @@ function formatMacros(m: Macros) {
   return { protein_g: r.protein, carbs_g: r.carbs, fat_g: r.fat, kcal: r.kcal }
 }
 
-const TOOLS: BetaTool[] = [
+const BASE_TOOLS: BetaTool[] = [
   {
     name: 'compute_portions',
     description:
@@ -221,13 +214,8 @@ const TOOLS: BetaTool[] = [
         solution_id: { type: 'string' },
         title: { type: 'string' },
         summary: { type: 'string', description: 'One or two sentences describing the dish.' },
-        extras: {
-          type: 'array',
-          items: { type: 'string' },
-          description:
-            'Seasonings with negligible macros that are not in the computation. Each entry is one item from STAPLES, ' +
-            'optionally with an amount, e.g. "1 tsp cumin". Water is always allowed. Empty when STAPLES is empty.',
-        },
+        // Filled in per request by toolsFor().
+        extras: { type: 'array' },
         steps: { type: 'array', items: { type: 'string' }, description: 'Cooking steps in order, with amounts and times.' },
         tips: {
           type: 'string',
@@ -240,14 +228,44 @@ const TOOLS: BetaTool[] = [
   },
 ]
 
+/** Water may always be added; everything else must be one of the user's staples. */
+const WATER = 'water'
+
+/**
+ * The tools for one request. The extras schema names the user's staples as the
+ * only choices, so an extra is a staple by construction rather than free text
+ * the app has to pick apart.
+ */
+function toolsFor(staples: string[]): BetaTool[] {
+  const extras = {
+    type: 'array',
+    description:
+      'Seasonings with negligible macros that are not in the computation. Each is one of STAPLES, or water. ' +
+      'Empty when STAPLES is empty and no water is needed.',
+    items: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['staple'],
+      properties: {
+        staple: { type: 'string', enum: [...staples, WATER] },
+        amount: { type: 'string', description: 'Optional, e.g. "1 tsp", "a pinch", "to taste".' },
+      },
+    },
+  }
+  return BASE_TOOLS.map((t) =>
+    t.name === 'submit_recipe'
+      ? { ...t, input_schema: { ...t.input_schema, properties: { ...(t.input_schema.properties as Record<string, unknown>), extras } } }
+      : t,
+  )
+}
+
 function wareLine(w: Ware) {
   const p = w.per100
   return `- ${w.id} | ${w.name}${w.brand ? ` (${w.brand})` : ''} | per 100 g: P ${p.protein} C ${p.carbs} F ${p.fat} kcal ${p.kcal}${w.notes ? ` | note: ${w.notes}` : ''}`
 }
 
-type Offered = ReturnType<typeof offered>
-
-export function buildPrompt(req: MealRequest, foods: Offered, limit: number) {
+export function buildPrompt(req: MealRequest, foods: MealFoods) {
+  const limit = SHOP_LIMITS[req.shopping]
   const shopRule =
     limit === 0
       ? 'The user does not want to shop: use only HOME and FREEZER foods.'
@@ -271,8 +289,7 @@ export function buildPrompt(req: MealRequest, foods: Offered, limit: number) {
     'ingredient, garnish, extra, tip or variation. The user may be on a restricted diet.\n' +
     '- Food rules are hard rules. They override the wish and everything else. If a listed food conflicts with a rule, ' +
     'do not use it.\n' +
-    '- Extras may only come from STAPLES, each as one staple with an optional amount. Water is always allowed. ' +
-    'If STAPLES is empty, use no extras other than water.\n\n' +
+    '- Extras may only come from STAPLES. Water is always allowed. If STAPLES is empty, use no extras other than water.\n\n' +
     'Other rules:\n' +
     '- Every ingredient with meaningful macros (including cooking oil, butter, sugar, milk) must be a food passed to ' +
     'compute_portions. If no oil or fat is listed, cook without added fat.\n' +
@@ -294,30 +311,6 @@ export function buildPrompt(req: MealRequest, foods: Offered, limit: number) {
     (limit > 0 ? group(shopTitle, foods.shop) : '')
 
   return { system, user }
-}
-
-// Words an extra may use besides its staple: amounts, units and how to add it.
-const EXTRA_FILLER = new Set(
-  (
-    'a an and or of to for the some few little bit pinch pinches dash dashes splash sprinkle drizzle handful ' +
-    'tsp tsps teaspoon teaspoons tbsp tbsps tablespoon tablespoons g gram grams ml l dl cup cups ' +
-    'taste tasting season seasoning serve serving garnish optional as needed more less extra ' +
-    'fresh freshly dried ground whole crushed chopped finely coarse coarsely flaky cracked water'
-  ).split(' '),
-)
-
-/**
- * A soft check that each extra is a staple: removes the staples it names, then
- * returns the words that are neither staples nor amounts. Catches the common
- * slips ("salt and pepper" when only salt is a staple); the prompt does the rest.
- */
-export function unlistedExtraWords(extra: string, staples: string[]): string[] {
-  let rest = ` ${extra.toLowerCase()} `
-  const byLength = [...staples].sort((a, b) => b.length - a.length)
-  for (const st of byLength) rest = rest.split(st.toLowerCase()).join(' ')
-  return rest
-    .split(/[^\p{L}]+/u)
-    .filter((w) => w && !EXTRA_FILLER.has(w))
 }
 
 interface ComputeIngredient {
@@ -361,16 +354,35 @@ function parseCompute(input: unknown): Parsed<ComputeIngredient[]> {
   return { ok: true, value: out }
 }
 
-function parseSubmit(input: unknown): Parsed<SubmitInput> {
+/** Reads one extra as "staple, amount", or says why it is not allowed. Staples match ignoring case. */
+function parseExtra(v: unknown, staples: string[]): Parsed<string> {
+  if (!isObj(v) || typeof v.staple !== 'string') return fail('Each extra must be an object with a string staple')
+  if (v.amount !== undefined && typeof v.amount !== 'string') return fail('An extra\'s amount must be a string')
+  const wanted = v.staple.trim().toLowerCase()
+  const staple = [...staples, WATER].find((st) => st.toLowerCase() === wanted)
+  if (!staple) {
+    return fail(`Extras may only come from STAPLES (${staples.join(', ') || 'none'}) or water. "${v.staple}" is not one. Remove it and submit again.`)
+  }
+  const amount = v.amount?.trim()
+  return { ok: true, value: amount ? `${staple}, ${amount}` : staple }
+}
+
+function parseSubmit(input: unknown, staples: string[]): Parsed<SubmitInput> {
   if (!isObj(input)) return fail('submit_recipe input must be an object')
   const { solution_id, title, summary, steps, extras, tips } = input
   if (typeof solution_id !== 'string') return fail('solution_id must be a string')
   if (typeof title !== 'string' || !title.trim()) return fail('title must be a non-empty string')
   if (typeof summary !== 'string') return fail('summary must be a string')
   if (!isStringArray(steps) || steps.length === 0) return fail('steps must be a non-empty array of strings')
-  if (!isStringArray(extras)) return fail('extras must be an array of strings')
+  if (!Array.isArray(extras)) return fail('extras must be an array')
+  const extraLines: string[] = []
+  for (const e of extras) {
+    const parsed = parseExtra(e, staples)
+    if (!parsed.ok) return parsed
+    extraLines.push(parsed.value)
+  }
   if (tips !== undefined && typeof tips !== 'string') return fail('tips must be a string')
-  return { ok: true, value: { solution_id, title: title.trim(), summary, steps, extras, tips } }
+  return { ok: true, value: { solution_id, title: title.trim(), summary, steps, extras: extraLines, tips } }
 }
 
 export async function generateMeal(
@@ -381,15 +393,15 @@ export async function generateMeal(
   onEvent: (e: AgentEvent) => void,
   signal?: AbortSignal,
 ): Promise<Recipe> {
-  const foods = offered(wares)
+  const foods = mealFoods(wares, req.shopping)
   const limit = SHOP_LIMITS[req.shopping]
-  const atHome = [...foods.home, ...foods.freezer]
-  const allowed = new Map((limit > 0 ? [...atHome, ...foods.shop] : atHome).map((w) => [w.id, w]))
+  const allowed = new Map(foods.all.map((w) => [w.id, w]))
   if (allowed.size === 0) {
     throw new Error('No foods to cook with. Set some foods to Home or Freezer in Kitchen, or allow shopping.')
   }
 
-  const { system, user } = buildPrompt(req, foods, limit)
+  const { system, user } = buildPrompt(req, foods)
+  const tools = toolsFor(req.staples)
   const messages: BetaMessageParam[] = [{ role: 'user', content: user }]
   const solutions = new Map<string, Solution>()
   let counter = 0
@@ -439,7 +451,7 @@ export async function generateMeal(
         thinking: { type: 'adaptive', display: 'summarized' },
         output_config: { effort: 'medium' },
         system,
-        tools: TOOLS,
+        tools,
         messages,
       },
       { signal },
@@ -470,7 +482,7 @@ export async function generateMeal(
         if (r.isError) onEvent({ kind: 'rejected', reason: r.content })
         results.push({ type: 'tool_result', tool_use_id: tu.id, content: r.content, is_error: r.isError })
       } else if (tu.name === 'submit_recipe') {
-        const parsed = parseSubmit(tu.input)
+        const parsed = parseSubmit(tu.input, req.staples)
         const sol = parsed.ok ? solutions.get(parsed.value.solution_id) : undefined
         if (!parsed.ok || !sol) {
           const reason = parsed.ok ? `Unknown solution_id: ${parsed.value.solution_id}` : parsed.error
@@ -479,15 +491,6 @@ export async function generateMeal(
           continue
         }
         const input = parsed.value
-        const unlisted = [...new Set(input.extras.flatMap((e) => unlistedExtraWords(e, req.staples)))]
-        if (unlisted.length > 0) {
-          const reason =
-            `Extras may only come from STAPLES (${req.staples.join(', ') || 'none'}), plus water. ` +
-            `Not a staple: ${unlisted.join(', ')}. Remove those extras and submit again.`
-          onEvent({ kind: 'rejected', reason })
-          results.push({ type: 'tool_result', tool_use_id: tu.id, content: reason, is_error: true })
-          continue
-        }
         const kept = sol.portions.filter((p) => p.grams > 0)
         return {
           id: crypto.randomUUID(),

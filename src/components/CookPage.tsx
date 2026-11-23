@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
-import { type AgentEvent, type Shopping, SHOPPING_LABEL } from '../claude'
+import type { AgentEvent } from '../claude'
 import { useStore } from '../store'
-import { MACRO_KEYS, type Macros, offered, type Recipe, roundMacro, STOCKS, zeroMacros } from '../types'
+import { MACRO_KEYS, type Macros, mealFoods, type Profile, type Recipe, roundMacro, type Shopping, SHOPPING_LABEL, STOCKS, type Ware } from '../types'
 import { FoodRow } from './FoodRow'
 import { MacroInputs, MacroSummary } from './MacroInputs'
 import { GoalsForm, KeyForm, RulesForm } from './ProfileForms'
 import { RecipeView } from './RecipeView'
 import { Sheet } from './Sheet'
 
-const SHARES = [
+interface Share {
+  label: string
+  value: number
+}
+
+const SHARES: Share[] = [
   { label: '¼', value: 0.25 },
   { label: '⅓', value: 1 / 3 },
   { label: '½', value: 0.5 },
@@ -22,7 +27,6 @@ const macroLine = (m: Macros) => `${m.protein} g protein · ${m.carbs} g carbs �
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
-/** Joins with commas and a final "and". */
 const joinAnd = (parts: string[]) => (parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`)
 
 /** An attempt's ingredients, leaving out any the solver set to 0 g. */
@@ -64,7 +68,6 @@ export function CookPage({ goToKitchen }: Props) {
     </>
   )
 
-  const foods = offered(state.wares)
   const steps: { kind: SheetKind | 'foods'; title: string; hint: string; done: boolean }[] = [
     { kind: 'goals', title: 'Your daily goals', hint: 'Protein, carbs, fat and energy for a whole day.', done: !!state.profile },
     {
@@ -78,11 +81,13 @@ export function CookPage({ goToKitchen }: Props) {
       kind: 'foods',
       title: 'Add your first foods',
       hint: 'What is in your kitchen? Claude cooks only with what you list.',
-      done: foods.home.length + foods.freezer.length > 0,
+      // Any food counts, so moving the last Home food to Shop never sends a set-up user back here.
+      done: state.wares.length > 0,
     },
   ]
 
-  if (steps.some((s) => !s.done)) {
+  const profile = state.profile
+  if (!profile || steps.some((s) => !s.done)) {
     const next = steps.find((s) => !s.done)
     return (
       <div className="page">
@@ -99,14 +104,17 @@ export function CookPage({ goToKitchen }: Props) {
                   <strong>{s.title}</strong>
                   <span className="hint">{s.hint}</span>
                 </div>
-                <button
-                  type="button"
-                  className={s === next ? '' : 'secondary'}
-                  aria-label={`${s.done ? 'Change' : 'Start'}: ${s.title}`}
-                  onClick={() => (s.kind === 'foods' ? goToKitchen() : setSheet(s.kind))}
-                >
-                  {s.done ? 'Change' : 'Start'}
-                </button>
+                {/* Steps are taken in order: rules and foods need the profile the goals step creates. */}
+                {(s.done || s === next) && (
+                  <button
+                    type="button"
+                    className={s === next ? '' : 'secondary'}
+                    aria-label={`${s.done ? 'Change' : 'Start'}: ${s.title}`}
+                    onClick={() => (s.kind === 'foods' ? goToKitchen() : setSheet(s.kind))}
+                  >
+                    {s.done ? 'Change' : 'Start'}
+                  </button>
+                )}
               </li>
             ))}
           </ol>
@@ -134,21 +142,25 @@ export function CookPage({ goToKitchen }: Props) {
           </div>
         </section>
       )}
-      <Planner openSheet={setSheet} goToKitchen={goToKitchen} />
+      <Planner profile={profile} openSheet={setSheet} goToKitchen={goToKitchen} />
       {sheets}
     </div>
   )
 }
 
-function Planner({ openSheet, goToKitchen }: { openSheet: (k: SheetKind) => void; goToKitchen: () => void }) {
-  const { state, update } = useStore()
-  const daily = state.profile?.dailyGoals ?? zeroMacros()
-  const rules = state.profile?.foodPreferences ?? ''
-  const staples = state.profile?.staples ?? []
-  const foods = offered(state.wares)
+interface PlannerProps {
+  profile: Profile
+  openSheet: (k: SheetKind) => void
+  goToKitchen: () => void
+}
 
-  const [share, setShare] = useState<number | null>(1 / 3)
-  const [target, setTarget] = useState<Macros>(() => scale(daily, 1 / 3))
+function Planner({ profile, openSheet, goToKitchen }: PlannerProps) {
+  const { state, update } = useStore()
+  const { dailyGoals: daily, foodRules: rules, staples } = profile
+
+  /** The chosen share of the day, or null once the numbers are adjusted by hand. */
+  const [share, setShare] = useState<Share | null>(SHARES[1])
+  const [target, setTarget] = useState<Macros>(() => scale(daily, SHARES[1].value))
   const [adjusting, setAdjusting] = useState(false)
   const [shoppingChoice, setShopping] = useState<Shopping>('none')
   const [wish, setWish] = useState('')
@@ -156,19 +168,20 @@ function Planner({ openSheet, goToKitchen }: { openSheet: (k: SheetKind) => void
   const [editing, setEditing] = useState(false)
   const [events, setEvents] = useState<AgentEvent[]>([])
   const [recipe, setRecipe] = useState<Recipe | null>(null)
-  const [error, setError] = useState<{ message: string; fixInSettings: boolean } | null>(null)
+  const [error, setError] = useState<{ message: string; fixKey: boolean } | null>(null)
   const [saved, setSaved] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
+  const shopFoods = state.wares.filter((w) => w.stock === 'shop').length
   // With nothing set to Shop there is nothing to buy, whatever was picked before.
-  const shopping: Shopping = foods.shop.length > 0 ? shoppingChoice : 'none'
-  const usable = foods.home.length + foods.freezer.length + (shopping === 'none' ? 0 : foods.shop.length)
+  const shopping: Shopping = shopFoods > 0 ? shoppingChoice : 'none'
+  const foods = mealFoods(state.wares, shopping)
 
-  const pickShare = (v: number) => {
-    setShare(v)
-    setTarget(scale(daily, v))
+  const pickShare = (sh: Share) => {
+    setShare(sh)
+    setTarget(scale(daily, sh.value))
   }
 
   const run = async () => {
@@ -204,10 +217,9 @@ function Planner({ openSheet, goToKitchen }: { openSheet: (k: SheetKind) => void
   const latest = attempts.at(-1)
   const collapsed = running || (!!recipe && !editing)
 
-  const shareLabel = SHARES.find((s) => share !== null && Math.abs(share - s.value) < 1e-6)?.label
   const summary = [
-    shareLabel ? `${shareLabel} of my day` : `${target.kcal} kcal`,
-    foods.shop.length > 0 ? SHOPPING_LABEL[shopping].toLowerCase() : '',
+    share ? `${share.label} of my day` : `${target.kcal} kcal`,
+    shopFoods > 0 ? SHOPPING_LABEL[shopping].toLowerCase() : '',
     wish.trim() ? `“${wish.trim()}”` : '',
   ]
     .filter(Boolean)
@@ -216,7 +228,7 @@ function Planner({ openSheet, goToKitchen }: { openSheet: (k: SheetKind) => void
   const stockParts = [
     foods.home.length ? `${plural(foods.home.length, 'food')} at home` : '',
     foods.freezer.length ? `${foods.freezer.length} in the freezer` : '',
-    shopping !== 'none' && foods.shop.length ? `${foods.shop.length} from the shop` : '',
+    foods.shop.length ? `${foods.shop.length} from the shop` : '',
   ].filter(Boolean)
 
   return (
@@ -239,8 +251,7 @@ function Planner({ openSheet, goToKitchen }: { openSheet: (k: SheetKind) => void
           </div>
         </section>
       ) : (
-        <section className="card">
-          <h2>Plan a meal</h2>
+        <section className="card" aria-label="Make a meal">
           <div className="field">
             <span className="field-label">How big a meal?</span>
             <div className="row">
@@ -248,9 +259,9 @@ function Planner({ openSheet, goToKitchen }: { openSheet: (k: SheetKind) => void
                 <button
                   key={s.label}
                   type="button"
-                  className={share !== null && Math.abs(share - s.value) < 1e-6 ? 'chip active' : 'chip'}
-                  aria-pressed={share !== null && Math.abs(share - s.value) < 1e-6}
-                  onClick={() => pickShare(s.value)}
+                  className={share === s ? 'chip active' : 'chip'}
+                  aria-pressed={share === s}
+                  onClick={() => pickShare(s)}
                 >
                   {s.label}
                 </button>
@@ -275,7 +286,7 @@ function Planner({ openSheet, goToKitchen }: { openSheet: (k: SheetKind) => void
             )}
           </div>
 
-          {foods.shop.length > 0 && (
+          {shopFoods > 0 && (
             <div className="field">
               <span className="field-label">Shopping</span>
               <div className="segmented wide" role="radiogroup" aria-label="Shopping">
@@ -314,10 +325,12 @@ function Planner({ openSheet, goToKitchen }: { openSheet: (k: SheetKind) => void
             </li>
           </ul>
 
-          <button type="button" onClick={run} disabled={usable === 0}>
+          <button type="button" onClick={run} disabled={foods.all.length === 0}>
             Make a meal
           </button>
-          {usable === 0 && <p className="hint">Set a food to Home or Freezer first, or allow shopping.</p>}
+          {foods.all.length === 0 && (
+            <p className="hint">{shopFoods > 0 ? 'Nothing is at home. Allow shopping, or set a food to Home or Freezer.' : 'Set a food to Home or Freezer first.'}</p>
+          )}
         </section>
       )}
 
@@ -331,7 +344,7 @@ function Planner({ openSheet, goToKitchen }: { openSheet: (k: SheetKind) => void
               <MacroSummary macros={latest.solution.totals} target={latest.solution.target} />
             </div>
           )}
-          {!running && <p className="hint">{attempts.length === 1 ? 'Fitted in one try.' : `Fitted in ${attempts.length} tries.`}</p>}
+          {!running && recipe && <p className="hint">{attempts.length === 1 ? 'Fitted in one try.' : `Fitted in ${attempts.length} tries.`}</p>}
           {(running ? attempts.length > 1 : attempts.length > 0) && (
             <details>
               <summary>Show attempts ({attempts.length})</summary>
@@ -351,7 +364,7 @@ function Planner({ openSheet, goToKitchen }: { openSheet: (k: SheetKind) => void
       {error && (
         <div className="error card" role="alert">
           <p>{error.message}</p>
-          {error.fixInSettings && (
+          {error.fixKey && (
             <button type="button" className="secondary" onClick={() => openSheet('key')}>
               Fix the key
             </button>
@@ -393,14 +406,15 @@ function StockSheet({ onClose }: { onClose: () => void }) {
       .sort((a, b) => STOCKS.indexOf(a.stock) - STOCKS.indexOf(b.stock) || a.name.localeCompare(b.name))
       .map((w) => w.id),
   )
-  const shown = ids.flatMap((id) => state.wares.filter((w) => w.id === id))
+  const byId = new Map(state.wares.map((w) => [w.id, w]))
+  const shown = ids.map((id) => byId.get(id)).filter((w): w is Ware => !!w)
   return (
     <Sheet title="Check what's in" onClose={onClose}>
       <p className="hint">Ran out of something? Set it to Shop if you would buy it, or Not now.</p>
       {shown.length === 0 ? (
         <p className="hint">No foods yet. Add some in Kitchen.</p>
       ) : (
-        <ul className="ware-list">
+        <ul className="food-list">
           {shown.map((w) => (
             <FoodRow key={w.id} food={w} />
           ))}

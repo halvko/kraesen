@@ -22,8 +22,15 @@ export function KitchenPage() {
   const { state, update } = useStore()
   const [mode, setMode] = useState<Mode>({ kind: 'list' })
   const [filter, setFilter] = useState('')
+  // The group each food was in when its stock was first changed on this visit. Rows stay in that group, so a
+  // food never jumps away under the user's finger (a mistaken Not now would vanish into a collapsed group);
+  // they regroup the next time Kitchen opens.
+  const [placed, setPlaced] = useState<Record<string, Stock>>({})
+  const groupOf = (w: Ware) => placed[w.id] ?? w.stock
 
   const save = (id: string | undefined, d: FoodDraft) => {
+    // A food saved in the editor goes straight to its new group.
+    if (id) setPlaced((p) => Object.fromEntries(Object.entries(p).filter(([k]) => k !== id)))
     update((s) => {
       if (id) return { ...s, wares: s.wares.map((w) => (w.id === id ? { ...w, ...d } : w)) }
       return { ...s, wares: [...s.wares, { ...d, id: newId(), createdAt: Date.now() }] }
@@ -71,7 +78,12 @@ export function KitchenPage() {
   const q = filter.trim().toLowerCase()
   const shown = state.wares.filter((w) => !q || w.name.toLowerCase().includes(q) || w.brand?.toLowerCase().includes(q))
   const row = (w: Ware) => (
-    <FoodRow key={w.id} food={w} onOpen={() => setMode({ kind: 'edit', id: w.id, draft: { ...w }, title: 'Edit food' })} />
+    <FoodRow
+      key={w.id}
+      food={w}
+      onOpen={() => setMode({ kind: 'edit', id: w.id, draft: { ...w }, title: 'Edit food' })}
+      onStockChange={(before) => setPlaced((p) => (before.id in p ? p : { ...p, [before.id]: before.stock }))}
+    />
   )
 
   return (
@@ -98,7 +110,7 @@ export function KitchenPage() {
         <input className="filter" placeholder="Search foods" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Search foods" />
       )}
       {GROUPS.map((g) => {
-        const items = shown.filter((w) => w.stock === g.stock).sort((a, b) => a.name.localeCompare(b.name))
+        const items = shown.filter((w) => groupOf(w) === g.stock).sort((a, b) => a.name.localeCompare(b.name))
         if (items.length === 0 && !g.empty) return null
         const title = (
           <h2>
@@ -110,7 +122,7 @@ export function KitchenPage() {
             <details key={g.stock} className="card group-off" open={!!q || undefined}>
               <summary>{title}</summary>
               <p className="hint">Kept for later. Claude never sees these.</p>
-              <ul className="ware-list">{items.map(row)}</ul>
+              <ul className="food-list">{items.map(row)}</ul>
             </details>
           )
         }
@@ -118,7 +130,7 @@ export function KitchenPage() {
           <section key={g.stock} className="card">
             {title}
             {items.length === 0 && <p className="hint">{g.empty}</p>}
-            <ul className="ware-list">{items.map(row)}</ul>
+            <ul className="food-list">{items.map(row)}</ul>
           </section>
         )
       })}

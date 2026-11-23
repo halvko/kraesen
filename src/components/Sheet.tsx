@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef } from 'react'
 
-/** A modal sheet that slides up from the bottom. Escape, the backdrop and Done all close it. */
+/** A modal sheet anchored to the bottom of the screen. Escape, the backdrop and Done all close it. */
 export function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {

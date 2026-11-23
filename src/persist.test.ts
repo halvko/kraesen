@@ -7,7 +7,7 @@ const sample = (): AppState => ({
   profile: {
     name: 'Erik',
     dailyGoals: { protein: 150, carbs: 200, fat: 70, kcal: 2050 },
-    foodPreferences: 'pescatarian',
+    foodRules: 'pescatarian',
     staples: ['salt', 'cumin'],
   },
   settings: { apiKey: 'sk-ant-secret', model: 'claude-opus-5-5', rulesAnswered: true },
@@ -48,6 +48,14 @@ describe('export and import', () => {
     expect(next.recipes).toEqual(sample().recipes)
     expect(next.profile).toEqual(sample().profile)
     expect(next.upgradeNotice).toBe(false)
+  })
+
+  it('never exports the upgrade notice, and shows it after importing a version 1 backup', () => {
+    expect(exportJson({ ...sample(), upgradeNotice: true })).not.toContain('upgradeNotice')
+    const v1 = JSON.stringify({ version: 1, wares: [{ id: 'a', name: 'Cod', list: 'have', status: 'available' }] })
+    const next = importJson(v1, emptyState())
+    expect(next.upgradeNotice).toBe(true)
+    expect(next.wares[0].stock).toBe('home')
   })
 
   it('rejects files that are not JSON or not an export', () => {
@@ -134,12 +142,12 @@ describe('normalize', () => {
   })
 
   it('reads a profile saved before food rules and staples existed', () => {
-    expect(normalize({ profile: { dailyGoals: { protein: 1 } } }).profile).toMatchObject({ foodPreferences: '', staples: [] })
+    expect(normalize({ profile: { dailyGoals: { protein: 1 } } }).profile).toMatchObject({ foodRules: '', staples: [] })
   })
 
   it('trims food rules, and trims and de-duplicates staples', () => {
-    const p = normalize({ profile: { dailyGoals: {}, foodPreferences: '  no sweeteners  ', staples: [' Salt', 'salt', '', 'cumin', 3] } }).profile
-    expect(p?.foodPreferences).toBe('no sweeteners')
-    expect(p?.staples).toEqual(['Salt', 'cumin', '3'])
+    const p = normalize({ profile: { dailyGoals: {}, foodRules: '  no sweeteners  ', staples: [' Salt', 'salt', '', 'cumin'] } }).profile
+    expect(p?.foodRules).toBe('no sweeteners')
+    expect(p?.staples).toEqual(['Salt', 'cumin'])
   })
 })

@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { BetaMessage, BetaMessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { describe, expect, it } from 'vitest'
-import { type AgentEvent, describeError, generateMeal, type MealRequest, parseLabelReply, unlistedExtraWords } from './claude'
+import { type AgentEvent, describeError, generateMeal, type MealRequest, parseLabelReply } from './claude'
 import type { Ware } from './types'
 
 const ware = (id: string, stock: Ware['stock']): Ware => ({
@@ -32,7 +32,7 @@ const recipe = (solution_id: string) => ({
   solution_id,
   title: 'Dish',
   summary: 'Nice.',
-  extras: ['salt'],
+  extras: [{ staple: 'salt' }],
   steps: ['Cook.'],
 })
 
@@ -169,17 +169,36 @@ describe('generateMeal', () => {
     expect(none).toContain('STAPLES: (none)')
   })
 
-  it('sends a recipe back when an extra is not a staple', async () => {
+  it('offers only the staples and water as extras, and sends a recipe back when an extra is anything else', async () => {
     const { client, requests } = scripted([
       reply([{ type: 'tool_use', id: 'a', name: 'compute_portions', input: { ingredients: [{ ware_id: 'have1' }] } }]),
-      reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: { ...recipe('S1'), extras: ['salt', '1 clove garlic'] } }]),
-      reply([{ type: 'tool_use', id: 'c', name: 'submit_recipe', input: { ...recipe('S1'), extras: ['salt to taste', 'water'] } }]),
+      reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: { ...recipe('S1'), extras: [{ staple: 'salt' }, { staple: 'garlic', amount: '1 clove' }] } }]),
+      reply([{ type: 'tool_use', id: 'c', name: 'submit_recipe', input: { ...recipe('S1'), extras: [{ staple: 'Salt', amount: 'to taste' }, { staple: 'water' }] } }]),
     ])
-    const r = await run(client)
+    const tools: unknown[] = []
+    const spy = { beta: { messages: { create: (p: { tools: unknown[] }) => (tools.push(p.tools), client.beta.messages.create(p as never)) } } }
+    const r = await generateMeal(spy as unknown as Anthropic, 'claude-opus-5-5', req('few'), WARES, () => {})
+    expect(JSON.stringify(tools[0])).toContain('"enum":["salt","black pepper","water"]')
     const rejected = lastResults([requests[2]])[0]
     expect(rejected.is_error).toBe(true)
-    expect(rejected.content).toContain('Not a staple: clove, garlic')
-    expect(r.extras).toEqual(['salt to taste', 'water'])
+    expect(rejected.content).toContain('"garlic" is not one')
+    expect(r.extras).toEqual(['salt, to taste', 'water'])
+  })
+
+  it('cooks with freezer foods, and allows any number of shop foods when shopping freely', async () => {
+    const all = { ingredients: ['cold1', 'buy1', 'buy2', 'buy3'].map((ware_id) => ({ ware_id, fixed_grams: 50 })) }
+    const { client, requests } = scripted([
+      reply([{ type: 'tool_use', id: 'a', name: 'compute_portions', input: all }]),
+      reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: recipe('S1') }]),
+    ])
+    const r = await run(client, 'any')
+    expect(requests[1].at(-1)).toMatchObject({ content: [{ is_error: false }] })
+    expect(r.ingredients.map((i) => [i.wareId, i.toBuy])).toEqual([
+      ['cold1', false],
+      ['buy1', true],
+      ['buy2', true],
+      ['buy3', true],
+    ])
   })
 
   it('stops on a refusal', async () => {
@@ -229,18 +248,8 @@ describe('describeError', () => {
     for (const [e, message, fix] of cases) {
       const info = describeError(e)
       expect(info.message).toContain(message)
-      expect(info.fixInSettings).toBe(fix)
+      expect(info.fixKey).toBe(fix)
     }
   })
 })
 
-describe('unlistedExtraWords', () => {
-  const staples = ['salt', 'black pepper', 'cumin']
-  it('accepts staples with amounts and returns any other word', () => {
-    expect(unlistedExtraWords('1 tsp ground cumin', staples)).toEqual([])
-    expect(unlistedExtraWords('Salt and freshly ground black pepper to taste', staples)).toEqual([])
-    expect(unlistedExtraWords('salt and pepper', ['salt'])).toEqual(['pepper'])
-    expect(unlistedExtraWords('2 tbsp soy sauce', staples)).toEqual(['soy', 'sauce'])
-    expect(unlistedExtraWords('a pinch of salt', [])).toEqual(['salt'])
-  })
-})

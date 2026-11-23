@@ -13,11 +13,11 @@ const MODELS = [
   { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (cheaper)' },
 ]
 
-/** A profile with the given changes, starting from an empty one when there is none yet. */
+/** A profile with the given changes; the goals step creates it, with no rules or staples yet. */
 const withProfile = (p: Profile | null, change: Partial<Profile>): Profile => ({
   name: '',
   dailyGoals: DEFAULT_GOALS,
-  foodPreferences: '',
+  foodRules: '',
   staples: [],
   ...p,
   ...change,
@@ -67,12 +67,14 @@ export function GoalsForm({ onSaved }: { onSaved?: () => void }) {
 
 export function RulesForm({ onSaved }: { onSaved?: () => void }) {
   const { state, update } = useStore()
-  const [rules, setRules] = useState(state.profile?.foodPreferences ?? '')
+  const [rules, setRules] = useState(state.profile?.foodRules ?? '')
   const [note, flash] = useSavedNote()
+  // Rules live on the profile, which the goals step creates; until then there is nowhere to keep them.
+  if (!state.profile) return <p className="hint">Save your daily goals first.</p>
   const save = (text: string) => {
     update((s) => ({
       ...s,
-      profile: withProfile(s.profile, { foodPreferences: text.trim() }),
+      profile: s.profile && { ...s.profile, foodRules: text.trim() },
       settings: { ...s.settings, rulesAnswered: true },
     }))
     flash('Saved.')
@@ -113,20 +115,30 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
   const [check, setCheck] = useState<Check>({ kind: 'idle' })
   const model = state.settings.model
 
-  // The key is saved even when the check fails, so a network hiccup never blocks setup; the result says what happened.
+  // The key is saved whatever the check says, so a network hiccup never blocks setup; the message says what happened.
+  // Saving comes after the check, because saving can finish the setup and close this form.
   const checkAndSave = async () => {
     const key = apiKey.trim()
-    update((s) => ({ ...s, settings: { ...s.settings, apiKey: key } }))
     setCheck({ kind: 'checking' })
     // The Claude SDK is loaded on first use to keep the initial download small.
     const { checkKey, describeError } = await import('../claude')
+    let result: Check
     try {
       await checkKey(key, model)
-      setCheck({ kind: 'ok' })
-      onSaved?.()
+      result = { kind: 'ok' }
     } catch (e) {
-      setCheck({ kind: 'failed', message: describeError(e).message })
+      result = { kind: 'failed', message: describeError(e).message }
     }
+    setCheck(result)
+    if (result.kind === 'ok') {
+      update((s) => ({ ...s, settings: { ...s.settings, apiKey: key } }))
+      onSaved?.()
+    }
+  }
+
+  const saveAnyway = () => {
+    update((s) => ({ ...s, settings: { ...s.settings, apiKey: apiKey.trim() } }))
+    onSaved?.()
   }
 
   return (
@@ -165,16 +177,14 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
         <button type="button" onClick={checkAndSave} disabled={!apiKey.trim() || check.kind === 'checking'}>
           {check.kind === 'checking' ? 'Checking…' : 'Check and save key'}
         </button>
-        {check.kind === 'ok' && <span className="hint ok-note">Saved. The key works.</span>}
+        {check.kind === 'ok' && <span className="hint ok-note">The key works. Saved.</span>}
       </div>
       {check.kind === 'failed' && (
         <div className="error" role="alert">
-          <p>Saved, but the check failed: {check.message}</p>
-          {onSaved && (
-            <button type="button" className="link" onClick={onSaved}>
-              Continue anyway
-            </button>
-          )}
+          <p>The check failed: {check.message}</p>
+          <button type="button" className="link" onClick={saveAnyway}>
+            Save this key anyway
+          </button>
         </div>
       )}
     </>

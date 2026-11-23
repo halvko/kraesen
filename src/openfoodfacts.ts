@@ -36,7 +36,7 @@ export async function lookupBarcode(barcode: string, signal?: AbortSignal): Prom
   if ([protein, carbs, fat, kcal].every((v) => v === undefined)) return null
   return {
     barcode: code,
-    name: p.product_name_en || p.product_name || `Product ${code}`,
+    name: p.product_name_en || p.product_name || `Food ${code}`,
     brand: typeof p.brands === 'string' ? p.brands.split(',')[0].trim() || undefined : undefined,
     per100: {
       protein: protein ?? 0,

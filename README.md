@@ -47,8 +47,8 @@ console.anthropic.com (checked with a tiny request), and your first foods.
 The prompt lists the foods in HOME, FREEZER and SHOP groups with the STAPLES,
 and says that nothing else may be used, mentioned or suggested. The app
 enforces what it can: it only accepts offered foods, counts shop foods against
-the shopping limit, and sends a recipe back when an extra names something that
-is not a staple. In the code a food is still a `Ware`.
+the shopping limit, and only lets an extra be one of the staples (or water):
+the tool's schema lists them as the only choices, and the app checks it. In the code a food is still a `Ware`.
 
 Data saved by the first version (a list and a status per food) is upgraded on
 load; when a case is unclear, the food gets the state that offers Claude less.

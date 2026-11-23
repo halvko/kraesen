@@ -45,15 +45,15 @@ function stockFromV1(list: unknown, status: unknown): { stock: Stock; frozenNote
   return { stock: 'off', frozenNote: false }
 }
 
-function readWare(v: unknown): Ware | null {
+function readWare(v: unknown, fromV1: boolean): Ware | null {
   if (!isObj(v)) return null
   const id = str(v.id)
   const name = str(v.name)?.trim()
   if (!id || !name) return null
   let notes = str(v.notes)?.trim() || undefined
   let stock: Stock
-  if (STOCKS.includes(v.stock as Stock)) {
-    stock = v.stock as Stock
+  if (!fromV1) {
+    stock = pick<Stock>(v.stock, STOCKS, 'off')
   } else {
     const old = stockFromV1(v.list, v.status)
     stock = old.stock
@@ -115,7 +115,8 @@ function readProfile(v: unknown): Profile | null {
   return {
     name: str(v.name) ?? '',
     dailyGoals: readMacros(v.dailyGoals),
-    foodPreferences: str(v.foodPreferences)?.trim() ?? '',
+    // Saved as foodPreferences before version 2.
+    foodRules: (str(v.foodRules) ?? str(v.foodPreferences))?.trim() ?? '',
     staples: cleanStaples(v.staples),
   }
 }
@@ -128,7 +129,7 @@ export function normalize(s: unknown): AppState {
     Array.isArray(v) ? v.map(read).filter((x): x is T => x !== null) : []
   const fromV1 = s.version !== 2
   const profile = readProfile(s.profile)
-  const wares = list(s.wares, readWare)
+  const wares = list(s.wares, (w) => readWare(w, fromV1))
   return {
     version: 2,
     profile,

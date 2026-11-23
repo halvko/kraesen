@@ -8,7 +8,15 @@ export function StaplesCard() {
   const staples = state.profile?.staples ?? []
   const [draft, setDraft] = useState('')
 
-  if (!state.profile) return null
+  // Staples live on the profile, like the food rules; the goals step creates it.
+  if (!state.profile) {
+    return (
+      <section className="card" id="staples">
+        <h2>Staples</h2>
+        <p className="hint">Seasonings Claude may add. Save your daily goals in Settings first.</p>
+      </section>
+    )
+  }
   const setStaples = (next: string[]) => update((s) => (s.profile ? { ...s, profile: { ...s.profile, staples: cleanStaples(next) } } : s))
   const add = () => {
     // "salt, pepper" adds two.
