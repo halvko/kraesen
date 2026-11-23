@@ -1,45 +1,14 @@
 import { useRef, useState } from 'react'
 import { exportJson, importJson } from '../persist'
 import { useStore } from '../store'
-import { DEFAULT_MODEL, type Macros, type Profile } from '../types'
-import { MacroInputs } from './MacroInputs'
+import { GoalsForm, KeyForm, RulesForm } from './ProfileForms'
 
-const MODELS = [
-  { id: 'claude-opus-5-5', label: 'Claude Opus 5.5 (best)' },
-  { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (cheaper)' },
-]
-
-const DEFAULT_GOALS: Macros = { protein: 140, carbs: 220, fat: 70, kcal: 2100 }
-
-/** The profile form's fields for a stored profile, or the defaults when there is none. */
-const formFrom = (p: Profile | null) => ({
-  name: p?.name ?? '',
-  goals: p?.dailyGoals ?? DEFAULT_GOALS,
-  preferences: p?.foodPreferences ?? '',
-})
-
-export function SettingsPage() {
-  const { state, update, replace } = useStore()
-  const [form, setForm] = useState(() => formFrom(state.profile))
-  const { name, goals, preferences } = form
-  const setField = <K extends keyof typeof form>(k: K) => (v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }))
-  const setGoals = setField('goals')
-  const setName = setField('name')
-  const setPreferences = setField('preferences')
-  const [apiKey, setApiKey] = useState(state.settings.apiKey)
-  const [showKey, setShowKey] = useState(false)
+export function SettingsPage({ onClose }: { onClose: () => void }) {
+  const { state, replace } = useStore()
   const [message, setMessage] = useState('')
+  // Remounts the forms after an import so they show the imported values.
+  const [generation, setGeneration] = useState(0)
   const fileRef = useRef<HTMLInputElement>(null)
-
-  const save = () => {
-    update((s) => ({
-      ...s,
-      profile: { name: name.trim(), dailyGoals: goals, foodPreferences: preferences.trim() },
-      settings: { ...s.settings, apiKey: apiKey.trim() },
-    }))
-    setMessage('Saved.')
-    setTimeout(() => setMessage(''), 2000)
-  }
 
   const download = () => {
     const blob = new Blob([exportJson(state)], { type: 'application/json' })
@@ -53,91 +22,41 @@ export function SettingsPage() {
   const onImport = async (file: File) => {
     try {
       const next = importJson(await file.text(), state)
-      if (!confirm(`Replace all data on this device with ${next.wares.length} wares and ${next.recipes.length} recipes from the file?`)) return
+      if (!confirm(`Replace all data on this device with ${next.wares.length} foods and ${next.recipes.length} recipes from the file?`)) return
       replace(next)
-      setForm(formFrom(next.profile))
+      setGeneration((g) => g + 1)
       setMessage('Imported.')
     } catch (e) {
       setMessage(e instanceof Error ? e.message : 'Import failed.')
     }
   }
 
-  const derivedKcal = Math.round(goals.protein * 4 + goals.carbs * 4 + goals.fat * 9)
-
   return (
-    <div className="page">
-      <section className="card">
-        <h2>Daily goals</h2>
-        <label>
-          <span>Name (optional)</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Erik" />
-        </label>
-        <MacroInputs idPrefix="goal" value={goals} onChange={setGoals} />
-        <p className="hint">
-          From protein, carbs and fat alone that is about {derivedKcal} kcal.
-          {Math.abs(derivedKcal - goals.kcal) > goals.kcal * 0.1 && goals.kcal > 0 ? ' Your energy goal differs quite a bit from that.' : ''}
-        </p>
-      </section>
-
-      <section className="card">
-        <h2>Food preferences</h2>
-        <label>
-          <span>Every meal follows these. Leave empty for none.</span>
-          <textarea
-            rows={3}
-            value={preferences}
-            onChange={(e) => setPreferences(e.target.value)}
-            placeholder="e.g. pescatarian, no light or low-fat products, no artificial sweeteners"
-          />
-        </label>
-      </section>
-
-      <section className="card">
-        <h2>Claude API key</h2>
-        <p className="hint">
-          Used to read nutrition labels and plan meals. It is stored only in this browser and sent only to
-          api.anthropic.com. Get one at console.anthropic.com.
-        </p>
-        <div className="row">
-          <input
-            type={showKey ? 'text' : 'password'}
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="sk-ant-…"
-            autoComplete="off"
-            aria-label="Claude API key"
-          />
-          <button type="button" className="secondary" onClick={() => setShowKey((v) => !v)}>
-            {showKey ? 'Hide' : 'Show'}
-          </button>
-        </div>
-        <label>
-          <span>Model</span>
-          <select
-            value={state.settings.model}
-            onChange={(e) => update((s) => ({ ...s, settings: { ...s.settings, model: e.target.value || DEFAULT_MODEL } }))}
-          >
-            {MODELS.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </section>
-
-      <div className="row sticky-actions">
-        <button type="button" onClick={save}>
-          Save
+    <div className="page" key={generation}>
+      <div className="row page-head">
+        <h2>Settings</h2>
+        <button type="button" className="secondary" onClick={onClose}>
+          Close
         </button>
-        {message && <span className="hint">{message}</span>}
       </div>
+      <section className="card" id="goals">
+        <h2>Daily goals</h2>
+        <GoalsForm />
+      </section>
+
+      <section className="card" id="rules">
+        <h2>Food rules</h2>
+        <RulesForm />
+      </section>
+
+      <section className="card" id="key">
+        <h2>Claude API key</h2>
+        <KeyForm />
+      </section>
 
       <section className="card">
         <h2>Backup</h2>
-        <p className="hint">
-          Everything lives on this device only. Export a JSON file now and then; the API key is never included.
-        </p>
+        <p className="hint">Everything lives on this device only. Export a JSON file now and then; the API key is never included.</p>
         <div className="row">
           <button type="button" className="secondary" onClick={download}>
             Export JSON
@@ -157,6 +76,7 @@ export function SettingsPage() {
             }}
           />
         </div>
+        {message && <p className="hint">{message}</p>}
       </section>
     </div>
   )

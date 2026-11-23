@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { relativeDeviation } from '../solver'
 import { MACRO_KEYS, MACRO_LABELS, MACRO_UNITS, type Macros, roundMacro, toNonNegative } from '../types'
 
@@ -9,6 +10,9 @@ interface Props {
 }
 
 export function MacroInputs({ value, onChange, suffix, idPrefix }: Props) {
+  // What the user is typing in the focused field. An emptied field stays empty while they type
+  // (the macro counts as 0) instead of snapping back to "0"; it shows the number again on blur.
+  const [draft, setDraft] = useState<{ key: keyof Macros; text: string }>()
   return (
     <div className="macro-grid">
       {MACRO_KEYS.map((k) => (
@@ -23,11 +27,15 @@ export function MacroInputs({ value, onChange, suffix, idPrefix }: Props) {
             inputMode="decimal"
             min={0}
             step="any"
-            value={Number.isFinite(value[k]) ? value[k] : ''}
+            value={draft?.key === k ? draft.text : Number.isFinite(value[k]) ? value[k] : ''}
             onChange={(e) => {
+              setDraft({ key: k, text: e.target.value })
               // Typed values bypass min={0}; macros are never negative.
               onChange({ ...value, [k]: toNonNegative(e.target.value) ?? 0 })
             }}
+            // Selecting on focus lets a new number replace the shown one, such as the 0 of a new food.
+            onFocus={(e) => e.target.select()}
+            onBlur={() => setDraft(undefined)}
           />
         </label>
       ))}

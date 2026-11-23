@@ -7,8 +7,7 @@ const ware = (id: string, protein: number, carbs: number, fat: number, kcal: num
   name: id,
   source: 'custom',
   per100: { protein, carbs, fat, kcal },
-  list: 'have',
-  status: 'available',
+  stock: 'home',
   createdAt: 0,
 })
 

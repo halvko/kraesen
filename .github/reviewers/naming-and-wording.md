@@ -6,8 +6,9 @@ Judge names and words outside code comments: identifiers, UI text, docs,
 commit messages and the PR description.
 
 - Names: does a new name match what the code around it already calls the
-  same thing? One concept, one word (the app says "ware", not also
-  "product" or "item" for the same thing). Flag a rename that leaves old
+  same thing? One concept, one word. The UI says "food" (the code's
+  `Ware`), never "ware" or "item"; where a food is, is its "stock"
+  (Home, Freezer, Shop, Not now). Flag a rename that leaves old
   spellings behind in code, tests or docs.
 - UI text: plain English, short, consistent with the wording elsewhere in
   the app, and true for what the button or message actually does.

@@ -1,26 +1,26 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { BetaMessage, BetaMessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages'
-import { describe, expect, it } from 'vitest'
-import { type AgentEvent, describeError, generateMeal, type MealRequest, parseLabelReply } from './claude'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { type AgentEvent, checkKey, describeError, generateMeal, type MealRequest, parseLabelReply, readNutritionLabel } from './claude'
 import type { Ware } from './types'
 
-const ware = (id: string, list: Ware['list'], status: Ware['status'] = 'available'): Ware => ({
+const ware = (id: string, stock: Ware['stock']): Ware => ({
   id,
   name: id,
   source: 'custom',
   per100: { protein: 20, carbs: 10, fat: 5, kcal: 165 },
-  list,
-  status,
+  stock,
   createdAt: 0,
 })
 
-const WARES = [ware('have1', 'have'), ware('have2', 'have'), ware('buy1', 'buy'), ware('buy2', 'buy'), ware('buy3', 'buy'), ware('gone', 'have', 'out')]
+const WARES = [ware('have1', 'home'), ware('cold1', 'freezer'), ware('buy1', 'shop'), ware('buy2', 'shop'), ware('buy3', 'shop'), ware('gone', 'off')]
 
-const req = (willingness: MealRequest['willingness']): MealRequest => ({
+const req = (shopping: MealRequest['shopping']): MealRequest => ({
   target: { protein: 40, carbs: 20, fat: 10, kcal: 330 },
-  willingness,
+  shopping,
   wish: '',
-  preferences: '',
+  rules: '',
+  staples: ['salt', 'black pepper'],
 })
 
 type Block = { type: 'tool_use'; id: string; name: string; input: unknown } | { type: 'text'; text: string }
@@ -32,18 +32,20 @@ const recipe = (solution_id: string) => ({
   solution_id,
   title: 'Dish',
   summary: 'Nice.',
-  extras: ['salt'],
+  extras: [{ staple: 'salt' }],
   steps: ['Cook.'],
 })
 
-/** A client whose replies are scripted; records every request's messages. */
+/** A client whose replies are scripted; records every request's messages and model. */
 function scripted(replies: BetaMessage[]) {
   const requests: BetaMessageParam[][] = []
+  const models: string[] = []
   const client = {
     beta: {
       messages: {
-        create: async (params: { messages: BetaMessageParam[] }) => {
+        create: async (params: { messages: BetaMessageParam[]; model: string }) => {
           requests.push(structuredClone(params.messages))
+          models.push(params.model)
           const next = replies.shift()
           if (!next) throw new Error('script ran out')
           return next
@@ -51,7 +53,7 @@ function scripted(replies: BetaMessage[]) {
       },
     },
   } as unknown as Anthropic
-  return { client, requests }
+  return { client, requests, models }
 }
 
 /** The tool_result blocks the app sent in its last request. */
@@ -65,8 +67,8 @@ function lastResults(requests: BetaMessageParam[][]) {
   }[]
 }
 
-const run = (client: Anthropic, willingness: MealRequest['willingness'] = 'some', events: AgentEvent[] = []) =>
-  generateMeal(client, 'claude-opus-5-5', req(willingness), WARES, (e) => events.push(e))
+const run = (client: Anthropic, shopping: MealRequest['shopping'] = 'few', events: AgentEvent[] = []) =>
+  generateMeal(client, req(shopping), WARES, (e) => events.push(e))
 
 describe('generateMeal', () => {
   it('pairs every tool_use with a tool_result, errors on unknown tools, and builds the recipe from the chosen solution', async () => {
@@ -88,7 +90,7 @@ describe('generateMeal', () => {
     expect(r.ingredients[0].grams).toBeGreaterThan(0)
   })
 
-  it('enforces the buy limit: none blocks buying, some allows two', async () => {
+  it('enforces the shopping limit: none blocks shop foods, a couple allows two', async () => {
     const buyTwo = { ingredients: [{ ware_id: 'have1' }, { ware_id: 'buy1' }, { ware_id: 'buy2' }] }
     const buyThree = { ingredients: [...buyTwo.ingredients, { ware_id: 'buy3' }] }
 
@@ -106,12 +108,12 @@ describe('generateMeal', () => {
       reply([{ type: 'tool_use', id: 'b', name: 'compute_portions', input: buyTwo }]),
       reply([{ type: 'tool_use', id: 'c', name: 'submit_recipe', input: recipe('S1') }]),
     ])
-    const r = await run(some.client, 'some')
+    const r = await run(some.client, 'few')
     expect(some.requests[1].at(-1)).toMatchObject({ content: [{ is_error: true }] })
-    expect(r.ingredients.filter((i) => i.fromBuyList)).toHaveLength(2)
+    expect(r.ingredients.filter((i) => i.toBuy)).toHaveLength(2)
   })
 
-  it('never offers wares that are out', async () => {
+  it('never offers foods that are set to Not now', async () => {
     const { client, requests } = scripted([
       reply([{ type: 'tool_use', id: 'a', name: 'compute_portions', input: { ingredients: [{ ware_id: 'gone' }] } }]),
       reply([{ type: 'tool_use', id: 'b', name: 'compute_portions', input: { ingredients: [{ ware_id: 'have1' }] } }]),
@@ -144,27 +146,96 @@ describe('generateMeal', () => {
     expect(requests.length).toBeLessThanOrEqual(16)
   })
 
-  const firstPrompt = async (preferences: string) => {
+  const firstPrompt = async (over: Partial<MealRequest> = {}) => {
     const { client, requests } = scripted([
       reply([{ type: 'tool_use', id: 'a', name: 'compute_portions', input: { ingredients: [{ ware_id: 'have1' }] } }]),
-      reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: recipe('S1') }]),
+      reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: { ...recipe('S1'), extras: [] } }]),
     ])
-    await generateMeal(client, 'claude-opus-5-5', { ...req('some'), preferences }, WARES, () => {})
+    await generateMeal(client, { ...req('few'), ...over }, WARES, () => {})
     return requests[0][0].content as string
   }
 
-  it('sends trimmed food preferences with the request', async () => {
-    expect(await firstPrompt('  pescatarian  ')).toContain('Food preferences (always follow): pescatarian\n')
+  it('sends trimmed food rules with the request, and leaves out blank ones', async () => {
+    expect(await firstPrompt({ rules: '  pescatarian  ' })).toContain('Food rules (always follow): pescatarian\n')
+    expect(await firstPrompt({ rules: '   ' })).not.toContain('Food rules')
   })
 
-  it('leaves out empty or blank food preferences', async () => {
-    expect(await firstPrompt('')).not.toContain('Food preferences')
-    expect(await firstPrompt('   ')).not.toContain('Food preferences')
+  it('lists foods by stock with the staples, and leaves out the shop when shopping is off', async () => {
+    const few = await firstPrompt()
+    expect(few).toContain('STAPLES: salt, black pepper\n')
+    expect(few).toMatch(/HOME \(at home\):\n- have1 /)
+    expect(few).toMatch(/FREEZER \(at home, frozen\):\n- cold1 /)
+    expect(few).toContain('SHOP (not at home, buy at most 2 different)')
+    const none = await firstPrompt({ shopping: 'none', staples: [] })
+    expect(none).not.toContain('SHOP')
+    expect(none).toContain('STAPLES: (none)')
+  })
+
+  it('offers only the staples and water as extras, and sends a recipe back when an extra is anything else', async () => {
+    const { client, requests } = scripted([
+      reply([{ type: 'tool_use', id: 'a', name: 'compute_portions', input: { ingredients: [{ ware_id: 'have1' }] } }]),
+      reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: { ...recipe('S1'), extras: [{ staple: 'salt' }, { staple: 'garlic', amount: '1 clove' }] } }]),
+      reply([{ type: 'tool_use', id: 'c', name: 'submit_recipe', input: { ...recipe('S1'), extras: [{ staple: 'Salt', amount: 'to taste' }, { staple: 'water' }] } }]),
+    ])
+    const tools: unknown[] = []
+    const spy = { beta: { messages: { create: (p: { tools: unknown[] }) => (tools.push(p.tools), client.beta.messages.create(p as never)) } } }
+    const r = await generateMeal(spy as unknown as Anthropic, req('few'), WARES, () => {})
+    expect(JSON.stringify(tools[0])).toContain('"enum":["salt","black pepper","water"]')
+    const rejected = lastResults([requests[2]])[0]
+    expect(rejected.is_error).toBe(true)
+    expect(rejected.content).toContain('"garlic" is not one')
+    expect(r.extras).toEqual(['salt, to taste', 'water'])
+  })
+
+  it('cooks with freezer foods, and allows any number of shop foods when shopping freely', async () => {
+    const all = { ingredients: ['cold1', 'buy1', 'buy2', 'buy3'].map((ware_id) => ({ ware_id, fixed_grams: 50 })) }
+    const { client, requests } = scripted([
+      reply([{ type: 'tool_use', id: 'a', name: 'compute_portions', input: all }]),
+      reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: recipe('S1') }]),
+    ])
+    const r = await run(client, 'any')
+    expect(requests[1].at(-1)).toMatchObject({ content: [{ is_error: false }] })
+    expect(r.ingredients.map((i) => [i.wareId, i.toBuy])).toEqual([
+      ['cold1', false],
+      ['buy1', true],
+      ['buy2', true],
+      ['buy3', true],
+    ])
   })
 
   it('stops on a refusal', async () => {
     const { client } = scripted([reply([], 'refusal')])
     await expect(run(client)).rejects.toThrow('declined')
+  })
+})
+
+describe('model', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('plans meals with Claude Sonnet 5.5 on every request', async () => {
+    const { client, models } = scripted([
+      reply([{ type: 'tool_use', id: 'a', name: 'compute_portions', input: { ingredients: [{ ware_id: 'have1' }] } }]),
+      reply([{ type: 'tool_use', id: 'b', name: 'submit_recipe', input: recipe('S1') }]),
+    ])
+    await run(client)
+    expect(models).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5'])
+  })
+
+  it('reads labels with Claude Sonnet 5.5', async () => {
+    const label = { readable: true, name: 'Skyr', brand: 'Arla', protein_g: 11, carbs_g: 4, fat_g: 0.2, kcal: 63, basis_note: '' }
+    const { client, models } = scripted([reply([{ type: 'text', text: JSON.stringify(label) }], 'end_turn')])
+    await readNutritionLabel(client, 'aGk=', 'image/jpeg')
+    expect(models).toEqual(['claude-sonnet-5-5'])
+  })
+
+  it('checks the key against Claude Sonnet 5.5', async () => {
+    const bodies: { model: string }[] = []
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)))
+      return new Response(JSON.stringify(reply([{ type: 'text', text: 'Hi' }], 'end_turn')), { headers: { 'content-type': 'application/json' } })
+    })
+    await checkKey('sk-ant-test')
+    expect(bodies.map((b) => b.model)).toEqual(['claude-sonnet-5-5'])
   })
 })
 
@@ -197,10 +268,10 @@ describe('parseLabelReply', () => {
 
 describe('describeError', () => {
   const headers = new Headers()
-  it('offers Settings only for key and permission errors', () => {
+  it('offers a key fix only for key and permission errors', () => {
     const cases: [unknown, string, boolean][] = [
       [new Anthropic.AuthenticationError(401, undefined, 'bad key', headers), 'API key was rejected', true],
-      [new Anthropic.PermissionDeniedError(403, undefined, 'no', headers), 'not allowed to use that model', true],
+      [new Anthropic.PermissionDeniedError(403, undefined, 'no', headers), 'not allowed to use Claude Sonnet 5.5', true],
       [new Anthropic.RateLimitError(429, undefined, 'slow', headers), 'Rate limited', false],
       [new Anthropic.APIConnectionError({ message: 'offline' }), 'Could not reach', false],
       [new Anthropic.InternalServerError(500, undefined, 'boom', headers), 'Claude API error 500', false],
@@ -209,7 +280,8 @@ describe('describeError', () => {
     for (const [e, message, fix] of cases) {
       const info = describeError(e)
       expect(info.message).toContain(message)
-      expect(info.fixInSettings).toBe(fix)
+      expect(info.fixKey).toBe(fix)
     }
   })
 })
+

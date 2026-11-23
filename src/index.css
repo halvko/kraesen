@@ -54,7 +54,19 @@ body {
 }
 
 .topbar {
-  padding: calc(env(safe-area-inset-top) + 12px) 16px 8px;
+  padding: calc(env(safe-area-inset-top) + 8px) 8px 4px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.gear {
+  font-size: 1.3rem;
+  border-radius: 999px;
+}
+
+.gear.on {
+  background: var(--accent-soft);
 }
 
 .topbar h1 {
@@ -160,6 +172,14 @@ button.link {
   padding: 0;
   text-decoration: underline;
   display: inline;
+  position: relative;
+}
+
+/* Inline links stay small in the text but get a 44 px tall tap area. */
+button.link::after {
+  content: '';
+  position: absolute;
+  inset: -12px -6px;
 }
 
 button.icon {
@@ -171,7 +191,7 @@ button.icon {
 }
 
 /* all: unset on row buttons removes the default focus ring; give it back. */
-.ware-main:focus-visible,
+.food-main:focus-visible,
 .recipe-row:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -247,7 +267,7 @@ button.icon {
   font-size: 0.9rem;
 }
 
-.ware-list {
+.food-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -255,7 +275,7 @@ button.icon {
   flex-direction: column;
 }
 
-.ware {
+.food {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -264,11 +284,11 @@ button.icon {
   border-top: 1px solid var(--border);
 }
 
-.ware:first-child {
+.food:first-child {
   border-top: none;
 }
 
-.ware-main {
+.food-main {
   all: unset;
   cursor: pointer;
   flex: 1 1 200px;
@@ -277,39 +297,18 @@ button.icon {
   min-width: 0;
 }
 
-.ware-name {
+.food-name {
   font-weight: 600;
 }
 
-.ware-name small {
+.food-name small {
   color: var(--muted);
   font-weight: 400;
 }
 
-.ware-macros {
+.food-macros {
   color: var(--muted);
   font-size: 0.85rem;
-}
-
-.ware-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.ware-actions select {
-  width: auto;
-  min-height: 44px;
-  padding: 6px 8px;
-  font-size: 0.9rem;
-}
-
-.status-out .ware-main {
-  opacity: 0.5;
-}
-
-.status-frozen .ware-name::after {
-  content: ' ❄';
 }
 
 .filter {
@@ -335,11 +334,6 @@ button.icon {
 .chip.active {
   background: var(--accent);
   color: var(--accent-text);
-}
-
-.share-row span {
-  color: var(--muted);
-  font-size: 0.9rem;
 }
 
 .macro-summary {
@@ -488,11 +482,305 @@ button.icon {
   padding: 0 4px;
 }
 
-.out-heading {
+/* A food's stock: one compact control with four segments. */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  padding: 2px;
+  flex: 0 0 auto;
+}
+
+.segmented button {
+  background: none;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.82rem;
+  padding: 6px 10px;
+  min-height: 40px;
+}
+
+.segmented button.on {
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 700;
+}
+
+.segmented button.on.stock-off {
+  background: var(--muted);
+  color: var(--surface);
+}
+
+.segmented.wide {
+  display: flex;
+  width: 100%;
+  border-radius: 14px;
+}
+
+.segmented.wide button {
+  flex: 1;
+  white-space: normal;
+  line-height: 1.2;
+  border-radius: 12px;
+  font-size: 0.88rem;
+}
+
+@media (max-width: 480px) {
+  .food .segmented {
+    width: 100%;
+  }
+  .segmented button {
+    flex: 1;
+    padding: 6px 4px;
+  }
+}
+
+details.card > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+details.card > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.card > summary h2::before {
+  content: '▸ ';
+  color: var(--muted);
+}
+
+details.card[open] > summary h2::before {
+  content: '▾ ';
+}
+
+.group-off .food-name {
+  color: var(--muted);
+}
+
+.stock-options {
+  border: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stock-options legend {
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.stock-option {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.stock-option.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.stock-option input {
+  width: auto;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+
+.stock-option > span {
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+}
+
+.stock-option small {
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+.delete-food {
+  margin-top: 8px;
+}
+
+.staples {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.staple {
+  display: inline-flex;
+  align-items: center;
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding-left: 14px;
+}
+
+.staple button.icon {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 4px 8px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 0.95rem;
   font-weight: 600;
-  margin: 4px 0 -4px;
-  padding-top: 10px;
+}
+
+label > span.field-label {
+  color: var(--text);
+}
+
+.context-lines {
+  list-style: none;
+  margin: 0;
+  padding: 10px 0 0;
   border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.request-summary {
+  margin: 0;
+}
+
+.progress details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
+.progress details ol {
+  margin-top: 10px;
+}
+
+.to-buy {
+  background: var(--warn-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.to-buy ul {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.notice {
+  background: var(--warn-soft);
+}
+
+.notice p {
+  margin: 0;
+}
+
+.page-head {
+  justify-content: space-between;
+  padding: 0 4px;
+}
+
+.setup-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.setup-steps li {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.setup-steps li > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.setup-steps .tick {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+.setup-steps li.done .tick {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.setup-steps li.next .tick {
+  border-color: var(--accent);
+}
+
+.setup-steps li.done strong {
+  color: var(--muted);
+}
+
+.ok-note {
+  color: var(--accent);
+}
+
+/* Sheets sit at the bottom of the screen, over the tab bar. */
+.sheet {
+  border: none;
+  padding: 0;
+  margin: auto auto 0;
+  width: 100%;
+  max-width: 720px;
+  max-height: 85dvh;
+  border-radius: 16px 16px 0 0;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.sheet::backdrop {
+  background: rgb(0 0 0 / 0.4);
+}
+
+.sheet-body {
+  padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* A row kept in its old group for the visit after its stock changed. */
+.food.moved .food-main {
+  opacity: 0.7;
 }

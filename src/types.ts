@@ -2,6 +2,8 @@ export type MacroKey = 'protein' | 'carbs' | 'fat' | 'kcal'
 
 export const MACRO_KEYS: MacroKey[] = ['protein', 'carbs', 'fat', 'kcal']
 
+export const sameMacros = (a: Macros, b: Macros) => MACRO_KEYS.every((k) => a[k] === b[k])
+
 export const MACRO_LABELS: Record<MacroKey, string> = {
   protein: 'Protein',
   carbs: 'Carbs',
@@ -18,13 +20,23 @@ export const MACRO_UNITS: Record<MacroKey, string> = {
 
 export type Macros = Record<MacroKey, number>
 
-/** Which list a ware is on: "have" (want to use it), "buy" (willing to buy it), or neither. */
-export type WareList = 'have' | 'buy' | 'neither'
+/**
+ * Where a food is right now, as one fact: at home, in the freezer, at the shop
+ * (not at home, but the user would buy it), or not now (kept for its macros;
+ * Claude never sees it).
+ */
+export type Stock = 'home' | 'freezer' | 'shop' | 'off'
 
-/** What each list is called in the app. The stored value 'have' is shown as "Use". */
-export const LIST_LABEL: Record<WareList, string> = { have: 'Use', buy: 'Buy', neither: 'Neither' }
+export const STOCKS: Stock[] = ['home', 'freezer', 'shop', 'off']
 
-export type WareStatus = 'available' | 'frozen' | 'out'
+export const STOCK_LABEL: Record<Stock, string> = { home: 'Home', freezer: 'Freezer', shop: 'Shop', off: 'Not now' }
+
+export const STOCK_HINT: Record<Stock, string> = {
+  home: 'In the fridge, the cupboard or the garden. Claude may use it.',
+  freezer: 'Frozen at home. Claude plans thawing or cooks it from frozen.',
+  shop: 'Not at home, but you would buy it. Used only when you allow shopping.',
+  off: 'Kept with its macros for later. Claude never sees it.',
+}
 
 export type WareSource = 'custom' | 'openfoodfacts' | 'label'
 
@@ -36,8 +48,7 @@ export interface Ware {
   source: WareSource
   /** Macros per 100 g. */
   per100: Macros
-  list: WareList
-  status: WareStatus
+  stock: Stock
   notes?: string
   createdAt: number
 }
@@ -45,20 +56,24 @@ export interface Ware {
 export interface Profile {
   name: string
   dailyGoals: Macros
-  /** Free text sent with every meal request; empty for none. */
-  foodPreferences: string
+  /** Free text sent with every meal request as hard rules; empty for none. */
+  foodRules: string
+  /** Seasonings the user has and accepts. Claude's extras may only come from here; empty means none. */
+  staples: string[]
 }
 
 export interface Settings {
   apiKey: string
-  model: string
+  /** True once the user has saved or skipped the food rules step of the first-run setup. */
+  rulesAnswered: boolean
 }
 
 export interface RecipeIngredient {
   wareId: string
   name: string
   grams: number
-  fromBuyList: boolean
+  /** True when the food was set to Shop when the recipe was made. */
+  toBuy: boolean
 }
 
 export interface Recipe {
@@ -75,21 +90,23 @@ export interface Recipe {
 }
 
 export interface AppState {
-  version: 1
+  version: 2
   profile: Profile | null
   settings: Settings
   wares: Ware[]
   recipes: Recipe[]
+  /** True after an upgrade from version 1, until the user dismisses the note about stock and staples. */
+  upgradeNotice: boolean
 }
 
-export const DEFAULT_MODEL = 'claude-opus-5-5'
 
 export const emptyState = (): AppState => ({
-  version: 1,
+  version: 2,
   profile: null,
-  settings: { apiKey: '', model: DEFAULT_MODEL },
+  settings: { apiKey: '', rulesAnswered: false },
   wares: [],
   recipes: [],
+  upgradeNotice: false,
 })
 
 export const zeroMacros = (): Macros => ({ protein: 0, carbs: 0, fat: 0, kcal: 0 })
@@ -105,10 +122,30 @@ export function roundMacros(m: Macros): Macros {
   return out
 }
 
-/** The wares a meal may use: not out, split by list. Wares on neither list are never offered. */
-export function partitionWares(wares: Ware[]): { have: Ware[]; buy: Ware[] } {
-  const usable = wares.filter((w) => w.status !== 'out')
-  return { have: usable.filter((w) => w.list === 'have'), buy: usable.filter((w) => w.list === 'buy') }
+/** How much shopping a meal may need. */
+export type Shopping = 'none' | 'few' | 'any'
+
+/** The most different Shop foods a meal may use. */
+export const SHOP_LIMITS: Record<Shopping, number> = { none: 0, few: 2, any: Infinity }
+
+export const SHOPPING_LABEL: Record<Shopping, string> = { none: 'Only what I have', few: 'A couple of things', any: 'Shop freely' }
+
+export interface MealFoods {
+  home: Ware[]
+  freezer: Ware[]
+  /** Empty when the meal may not use the shop. */
+  shop: Ware[]
+  /** All of the above. */
+  all: Ware[]
+}
+
+/** The foods a meal may use with this shopping choice. Foods that are "Not now" are never offered. */
+export function mealFoods(wares: Ware[], shopping: Shopping): MealFoods {
+  const by = (stock: Stock) => wares.filter((w) => w.stock === stock)
+  const home = by('home')
+  const freezer = by('freezer')
+  const shop = SHOP_LIMITS[shopping] > 0 ? by('shop') : []
+  return { home, freezer, shop, all: [...home, ...freezer, ...shop] }
 }
 
 export type Loose = Record<string, unknown>

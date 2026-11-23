@@ -8,7 +8,10 @@ import type {
   BetaToolUseBlock,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { type PortionRequest, type Solution, solvePortions } from './solver'
-import { isObj, MACRO_KEYS, type Macros, partitionWares, type Recipe, roundMacro, roundMacros, toNonNegative, type Ware } from './types'
+import { isObj, MACRO_KEYS, type MealFoods, mealFoods, type Macros, type Recipe, roundMacro, roundMacros, SHOP_LIMITS, type Shopping, toNonNegative, type Ware } from './types'
+
+/** Every Claude call uses this model. */
+const MODEL = { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }
 
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 
@@ -19,19 +22,30 @@ export function makeClient(apiKey: string) {
 
 export interface ErrorInfo {
   message: string
-  /** True when the user should fix their API key or model in Settings. */
-  fixInSettings: boolean
+  /** True when the fix is a different API key. */
+  fixKey: boolean
 }
 
-/** Turns an error into a message for the user, and says whether the fix is in Settings. */
+/** Turns an error into a message for the user, and says whether the fix is a different key. */
 export function describeError(e: unknown): ErrorInfo {
-  const info = (message: string, fixInSettings = false) => ({ message, fixInSettings })
-  if (e instanceof Anthropic.AuthenticationError) return info('The API key was rejected. Check it in Settings.', true)
-  if (e instanceof Anthropic.PermissionDeniedError) return info('This API key is not allowed to use that model.', true)
+  const info = (message: string, fixKey = false) => ({ message, fixKey })
+  if (e instanceof Anthropic.AuthenticationError) return info('The API key was rejected.', true)
+  if (e instanceof Anthropic.PermissionDeniedError) return info(`This API key is not allowed to use ${MODEL.label}.`, true)
   if (e instanceof Anthropic.RateLimitError) return info('Rate limited by the Claude API. Wait a minute and try again.')
   if (e instanceof Anthropic.APIConnectionError) return info('Could not reach the Claude API. Are you online?')
   if (e instanceof Anthropic.APIError) return info(`Claude API error ${e.status ?? ''}: ${e.message}`)
   return info(e instanceof Error ? e.message : String(e))
+}
+
+/** Sends a one-token request with this key. Throws when the key is rejected or the API cannot be reached. */
+export async function checkKey(apiKey: string): Promise<void> {
+  await makeClient(apiKey).beta.messages.create({
+    model: MODEL.id,
+    max_tokens: 1,
+    betas: [FALLBACK_BETA],
+    fallbacks: 'default',
+    messages: [{ role: 'user', content: 'Hi' }],
+  })
 }
 
 function textOf(msg: BetaMessage): string {
@@ -99,14 +113,13 @@ export function parseLabelReply(msg: Pick<BetaMessage, 'stop_reason' | 'content'
 
 export async function readNutritionLabel(
   client: Anthropic,
-  model: string,
   imageBase64: string,
   mediaType: 'image/jpeg' | 'image/png',
   signal?: AbortSignal,
 ): Promise<LabelReading> {
   const msg = await client.beta.messages.create(
     {
-      model,
+      model: MODEL.id,
       max_tokens: 4000,
       betas: [FALLBACK_BETA],
       fallbacks: 'default',
@@ -137,16 +150,14 @@ export async function readNutritionLabel(
 // Meal generation agent
 // ---------------------------------------------------------------------------
 
-export type BuyWillingness = 'none' | 'some' | 'happy'
-
-export const BUY_LIMITS: Record<BuyWillingness, number> = { none: 0, some: 2, happy: Infinity }
-
 export interface MealRequest {
   target: Macros
-  willingness: BuyWillingness
+  shopping: Shopping
   wish: string
-  /** The user's standing food preferences from Settings; empty for none. */
-  preferences: string
+  /** The user's food rules from Settings; empty for none. */
+  rules: string
+  /** Seasonings the user has and accepts; the only allowed extras. */
+  staples: string[]
 }
 
 export type AgentEvent =
@@ -160,8 +171,7 @@ function formatMacros(m: Macros) {
   return { protein_g: r.protein, carbs_g: r.carbs, fat_g: r.fat, kcal: r.kcal }
 }
 
-const TOOLS: BetaTool[] = [
-  {
+const COMPUTE_TOOL: BetaTool =   {
     name: 'compute_portions',
     description:
       'Given a set of ingredients (by ware_id) and optional gram bounds, the app computes the exact grams of each ' +
@@ -191,75 +201,109 @@ const TOOLS: BetaTool[] = [
         },
       },
     },
-  },
-  {
-    name: 'submit_recipe',
-    description:
-      'Submit the final recipe built on one solution from compute_portions. Ingredient amounts are taken from that ' +
-      'solution exactly, so write the steps using those gram amounts.',
-    input_schema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['solution_id', 'title', 'summary', 'extras', 'steps'],
-      properties: {
-        solution_id: { type: 'string' },
-        title: { type: 'string' },
-        summary: { type: 'string', description: 'One or two sentences describing the dish.' },
-        extras: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Seasonings with negligible macros not in the computation, e.g. "salt and pepper", "1 tsp cumin".',
+  }
+
+/** Water may always be added; everything else must be one of the user's staples. */
+const WATER = 'water'
+
+/**
+ * The tools for one request. The extras schema names the user's staples as the
+ * only choices, so every extra is a staple by construction.
+ */
+function toolsFor(staples: string[]): BetaTool[] {
+  return [
+    COMPUTE_TOOL,
+    {
+      name: 'submit_recipe',
+      description:
+        'Submit the final recipe built on one solution from compute_portions. Ingredient amounts are taken from that ' +
+        'solution exactly, so write the steps using those gram amounts.',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['solution_id', 'title', 'summary', 'extras', 'steps'],
+        properties: {
+          solution_id: { type: 'string' },
+          title: { type: 'string' },
+          summary: { type: 'string', description: 'One or two sentences describing the dish.' },
+          extras: {
+            type: 'array',
+            description:
+              'Seasonings with negligible macros that are not in the computation. Each is one of STAPLES, or water. ' +
+              'Empty when STAPLES is empty and no water is needed.',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['staple'],
+              properties: {
+                staple: { type: 'string', enum: [...staples, WATER] },
+                amount: { type: 'string', description: 'Optional, e.g. "1 tsp", "a pinch", "to taste".' },
+              },
+            },
+          },
+          steps: { type: 'array', items: { type: 'string' }, description: 'Cooking steps in order, with amounts and times.' },
+          tips: {
+            type: 'string',
+            description:
+              'Optional serving or variation tips. Like everything else, tips must not mention any food that is not in ' +
+              "the user's lists or STAPLES.",
+          },
         },
-        steps: { type: 'array', items: { type: 'string' }, description: 'Cooking steps in order, with amounts and times.' },
-        tips: { type: 'string', description: 'Optional serving or variation tips.' },
       },
     },
-  },
-]
+  ]
+}
 
 function wareLine(w: Ware) {
   const p = w.per100
-  const status = w.status === 'frozen' ? ' [frozen]' : ''
-  return `- ${w.id} | ${w.name}${w.brand ? ` (${w.brand})` : ''}${status} | per 100 g: P ${p.protein} C ${p.carbs} F ${p.fat} kcal ${p.kcal}${w.notes ? ` | note: ${w.notes}` : ''}`
+  return `- ${w.id} | ${w.name}${w.brand ? ` (${w.brand})` : ''} | per 100 g: P ${p.protein} C ${p.carbs} F ${p.fat} kcal ${p.kcal}${w.notes ? ` | note: ${w.notes}` : ''}`
 }
 
-function buildPrompt(req: MealRequest, have: Ware[], buy: Ware[], limit: number) {
-  const buyRule =
+export function buildPrompt(req: MealRequest, foods: MealFoods) {
+  const limit = SHOP_LIMITS[req.shopping]
+  const shopRule =
     limit === 0
-      ? 'The user does not want to buy anything: use only wares from the HAVE list.'
+      ? 'The user does not want to shop: use only HOME and FREEZER foods.'
       : limit === Infinity
-        ? 'The user is happy to buy wares from the BUY list as needed, though using HAVE wares is still preferred.'
-        : `The user is willing to buy at most ${limit} different wares from the BUY list; prefer HAVE wares.`
+        ? 'The user is happy to buy SHOP foods as needed, though HOME and FREEZER foods are still preferred.'
+        : `The user is willing to buy at most ${limit} different SHOP foods; prefer HOME and FREEZER foods.`
 
   const system =
     'You plan single meals for one person who tracks macronutrients. You pick ingredients and write the recipe; ' +
     'the app does all gram arithmetic. Never compute grams or macros yourself.\n\n' +
     'Process:\n' +
-    '1. Choose a dish that suits the wares and the wish, and pick a candidate set of ingredients by ware_id.\n' +
+    '1. Choose a dish that suits the foods and the wish, and pick a candidate set of ingredients by ware_id.\n' +
     '2. Call compute_portions with culinary bounds (min/max grams) so the dish stays sensible. Use fixed_grams for ' +
     'things that come in units (eggs) or where amounts matter for taste.\n' +
     '3. Read the deviations. If any macro is off by more than about 10 %, change the ingredient set or bounds ' +
     '(swap a fatty item for a lean one, add a carb source, and so on) and call again. Stop after the fit is good ' +
     'or after about 6 attempts, taking the best one.\n' +
     '4. Call submit_recipe with the best solution_id, writing steps that use the exact grams from that solution.\n\n' +
-    'Rules:\n' +
-    '- Every ingredient with meaningful macros (including cooking oil, butter, sugar, milk) must be a ware passed to ' +
-    'compute_portions. If no oil or fat ware is listed, cook without added fat.\n' +
-    '- "extras" is only for seasonings with negligible macros: salt, pepper, dried spices, vinegar, water, a few herbs.\n' +
-    '- Frozen wares are fine; mention thawing or cooking from frozen in the steps.\n' +
+    'Whitelist (strict):\n' +
+    "- The user's lists below are the ONLY foods available. Never use, suggest or mention any other food: not as an " +
+    'ingredient, garnish, extra, tip or variation. The user may be on a restricted diet.\n' +
+    '- Food rules are hard rules. They override the wish and everything else. If a listed food conflicts with a rule, ' +
+    'do not use it.\n' +
+    '- Extras may only come from STAPLES. Water is always allowed. If STAPLES is empty, use no extras other than water.\n\n' +
+    'Other rules:\n' +
+    '- Every ingredient with meaningful macros (including cooking oil, butter, sugar, milk) must be a food passed to ' +
+    'compute_portions. If no oil or fat is listed, cook without added fat.\n' +
+    '- FREEZER foods are frozen: include thawing or cook-from-frozen steps.\n' +
     '- Ingredients that come out at 0 g should be removed from the set before submitting.\n' +
-    `- ${buyRule}\n` +
-    '- If the user states food preferences, every recipe must follow them, including extras and cooking fat. ' +
-    'Skip any listed ware that conflicts with them.\n' +
+    `- ${shopRule}\n` +
     '- Write in English. Keep steps concrete with times and temperatures.'
 
+  const group = (title: string, ws: Ware[]) => `\n${title}:\n${ws.map(wareLine).join('\n') || '(none)'}\n`
+  const shopTitle = limit === Infinity ? 'SHOP (not at home, willing to buy)' : `SHOP (not at home, buy at most ${limit} different)`
   const user =
     `Macro target for this meal: protein ${roundMacro('protein', req.target.protein)} g, carbs ${roundMacro('carbs', req.target.carbs)} g, ` +
     `fat ${roundMacro('fat', req.target.fat)} g, energy ${roundMacro('kcal', req.target.kcal)} kcal.\n` +
-    (req.preferences.trim() ? `Food preferences (always follow): ${req.preferences.trim()}\n` : '') +
+    (req.rules.trim() ? `Food rules (always follow): ${req.rules.trim()}\n` : '') +
     (req.wish.trim() ? `Wish for this meal: ${req.wish.trim()}\n` : '') +
-    `\nHAVE (at home, want to use):\n${have.map(wareLine).join('\n') || '(none)'}\n` +
-    (limit > 0 ? `\nBUY (willing to buy):\n${buy.map(wareLine).join('\n') || '(none)'}\n` : '')
+    `STAPLES: ${req.staples.join(', ') || '(none)'}\n` +
+    group('HOME (at home)', foods.home) +
+    group('FREEZER (at home, frozen)', foods.freezer) +
+    (limit > 0 ? group(shopTitle, foods.shop) : '')
 
   return { system, user }
 }
@@ -305,34 +349,53 @@ function parseCompute(input: unknown): Parsed<ComputeIngredient[]> {
   return { ok: true, value: out }
 }
 
-function parseSubmit(input: unknown): Parsed<SubmitInput> {
+/** Reads one extra as "staple, amount", or says why it is not allowed. Staples match ignoring case. */
+function parseExtra(v: unknown, staples: string[]): Parsed<string> {
+  if (!isObj(v) || typeof v.staple !== 'string') return fail('Each extra must be an object with a string staple')
+  if (v.amount !== undefined && typeof v.amount !== 'string') return fail('An extra\'s amount must be a string')
+  const wanted = v.staple.trim().toLowerCase()
+  const staple = [...staples, WATER].find((st) => st.toLowerCase() === wanted)
+  if (!staple) {
+    return fail(`Extras may only come from STAPLES (${staples.join(', ') || 'none'}) or water. "${v.staple}" is not one. Remove it and submit again.`)
+  }
+  const amount = v.amount?.trim()
+  return { ok: true, value: amount ? `${staple}, ${amount}` : staple }
+}
+
+function parseSubmit(input: unknown, staples: string[]): Parsed<SubmitInput> {
   if (!isObj(input)) return fail('submit_recipe input must be an object')
   const { solution_id, title, summary, steps, extras, tips } = input
   if (typeof solution_id !== 'string') return fail('solution_id must be a string')
   if (typeof title !== 'string' || !title.trim()) return fail('title must be a non-empty string')
   if (typeof summary !== 'string') return fail('summary must be a string')
   if (!isStringArray(steps) || steps.length === 0) return fail('steps must be a non-empty array of strings')
-  if (!isStringArray(extras)) return fail('extras must be an array of strings')
+  if (!Array.isArray(extras)) return fail('extras must be an array')
+  const extraLines: string[] = []
+  for (const e of extras) {
+    const parsed = parseExtra(e, staples)
+    if (!parsed.ok) return parsed
+    extraLines.push(parsed.value)
+  }
   if (tips !== undefined && typeof tips !== 'string') return fail('tips must be a string')
-  return { ok: true, value: { solution_id, title: title.trim(), summary, steps, extras, tips } }
+  return { ok: true, value: { solution_id, title: title.trim(), summary, steps, extras: extraLines, tips } }
 }
 
 export async function generateMeal(
   client: Anthropic,
-  model: string,
   req: MealRequest,
   wares: Ware[],
   onEvent: (e: AgentEvent) => void,
   signal?: AbortSignal,
 ): Promise<Recipe> {
-  const { have, buy } = partitionWares(wares)
-  const limit = BUY_LIMITS[req.willingness]
-  const allowed = new Map((limit > 0 ? [...have, ...buy] : have).map((w) => [w.id, w]))
-  if (have.length === 0 && (limit === 0 || buy.length === 0)) {
-    throw new Error('No usable wares. Add some to your "Use" list (or allow buying) first.')
+  const foods = mealFoods(wares, req.shopping)
+  const limit = SHOP_LIMITS[req.shopping]
+  const allowed = new Map(foods.all.map((w) => [w.id, w]))
+  if (allowed.size === 0) {
+    throw new Error('No foods to cook with. Set some foods to Home or Freezer in Kitchen, or allow shopping.')
   }
 
-  const { system, user } = buildPrompt(req, have, buy, limit)
+  const { system, user } = buildPrompt(req, foods)
+  const tools = toolsFor(req.staples)
   const messages: BetaMessageParam[] = [{ role: 'user', content: user }]
   const solutions = new Map<string, Solution>()
   let counter = 0
@@ -344,14 +407,14 @@ export async function generateMeal(
     const seen = new Set<string>()
     for (const ing of parsed.value) {
       const w = allowed.get(ing.ware_id)
-      if (!w) return { content: `Unknown or not allowed ware_id: ${ing.ware_id}`, isError: true }
+      if (!w) return { content: `Unknown or not offered ware_id: ${ing.ware_id}. Use only the listed foods.`, isError: true }
       if (seen.has(w.id)) return { content: `Duplicate ware_id: ${w.id}`, isError: true }
       seen.add(w.id)
       requests.push({ ware: w, minGrams: ing.min_grams, maxGrams: ing.max_grams, fixedGrams: ing.fixed_grams })
     }
-    const buyCount = requests.filter((r) => r.ware.list === 'buy').length
-    if (buyCount > limit) {
-      return { content: `Uses ${buyCount} BUY wares but the user allows at most ${limit}.`, isError: true }
+    const shopCount = requests.filter((r) => r.ware.stock === 'shop').length
+    if (shopCount > limit) {
+      return { content: `Uses ${shopCount} SHOP foods but the user allows at most ${limit}.`, isError: true }
     }
     const solution = solvePortions(requests, req.target)
     const id = `S${++counter}`
@@ -375,14 +438,14 @@ export async function generateMeal(
     if (signal?.aborted) throw new Error('Cancelled')
     const response = await client.beta.messages.create(
       {
-        model,
+        model: MODEL.id,
         max_tokens: 16000,
         betas: [FALLBACK_BETA],
         fallbacks: 'default',
         thinking: { type: 'adaptive', display: 'summarized' },
         output_config: { effort: 'medium' },
         system,
-        tools: TOOLS,
+        tools,
         messages,
       },
       { signal },
@@ -413,7 +476,7 @@ export async function generateMeal(
         if (r.isError) onEvent({ kind: 'rejected', reason: r.content })
         results.push({ type: 'tool_result', tool_use_id: tu.id, content: r.content, is_error: r.isError })
       } else if (tu.name === 'submit_recipe') {
-        const parsed = parseSubmit(tu.input)
+        const parsed = parseSubmit(tu.input, req.staples)
         const sol = parsed.ok ? solutions.get(parsed.value.solution_id) : undefined
         if (!parsed.ok || !sol) {
           const reason = parsed.ok ? `Unknown solution_id: ${parsed.value.solution_id}` : parsed.error
@@ -427,7 +490,7 @@ export async function generateMeal(
           id: crypto.randomUUID(),
           title: input.title,
           summary: input.summary,
-          ingredients: kept.map((p) => ({ wareId: p.ware.id, name: p.ware.name, grams: p.grams, fromBuyList: p.ware.list === 'buy' })),
+          ingredients: kept.map((p) => ({ wareId: p.ware.id, name: p.ware.name, grams: p.grams, toBuy: p.ware.stock === 'shop' })),
           extras: input.extras,
           steps: input.steps,
           tips: input.tips,
