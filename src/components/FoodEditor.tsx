@@ -173,7 +173,15 @@ export function FoodEditor({ initial, title, banner, onSave, onCancel, onDelete 
               </button>
             )}
             {lookup.st.kind === 'done' && lookup.st.cached && (
-              <button type="button" className="secondary" onClick={() => lookup.run(next.name, true)}>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  lookup.run(next.name, true)
+                  // This button unmounts once the lookup starts; keep focus on the lookup button.
+                  lookupButton.current?.focus()
+                }}
+              >
                 Look up again
               </button>
             )}

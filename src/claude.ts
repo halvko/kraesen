@@ -71,16 +71,18 @@ interface ToolLoop<T> {
   tools: BetaToolUnion[]
   firstMessage: string
   maxTurns: number
-  effort: 'low' | 'medium' | 'high'
-  thinking?: { type: 'adaptive'; display: 'summarized' }
+  /** Shows Claude's summarized thinking in the response. */
+  thinking?: boolean
   /** Said to Claude when it stops without calling a tool. */
   nudge: string
-  /** Who is speaking in errors shown to the user, e.g. "The lookup". */
-  what: string
+  /** Error shown when a response hits max_tokens. */
+  cutOff: string
+  /** Error shown when maxTurns runs out. */
   giveUp: string
   /** Called with each response before its tool calls are handled. */
   onResponse?: (content: BetaMessage['content']) => void
-  handle: (toolUse: BetaToolUseBlock) => ToolOutcome<T>
+  /** One handler per client tool, by name; the loop answers any other name itself. */
+  handlers: Record<string, (input: unknown) => ToolOutcome<T>>
   signal?: AbortSignal
 }
 
@@ -98,8 +100,8 @@ async function runToolLoop<T>(client: Anthropic, loop: ToolLoop<T>): Promise<T> 
         max_tokens: 16000,
         betas: [FALLBACK_BETA],
         fallbacks: 'default',
-        ...(loop.thinking ? { thinking: loop.thinking } : {}),
-        output_config: { effort: loop.effort },
+        ...(loop.thinking ? { thinking: { type: 'adaptive', display: 'summarized' } } : {}),
+        output_config: { effort: 'medium' },
         system: loop.system,
         tools: loop.tools,
         messages,
@@ -108,7 +110,7 @@ async function runToolLoop<T>(client: Anthropic, loop: ToolLoop<T>): Promise<T> 
     )
     loop.onResponse?.(response.content)
     if (response.stop_reason === 'refusal') throw new Error('Claude declined this request.')
-    if (response.stop_reason === 'max_tokens') throw new Error(`${loop.what} was cut off. Please try again.`)
+    if (response.stop_reason === 'max_tokens') throw new Error(loop.cutOff)
     messages.push({ role: 'assistant', content: response.content as BetaContentBlockParam[] })
     // The server's tool loop paused; sending the conversation back resumes it.
     if (response.stop_reason === 'pause_turn') continue
@@ -120,7 +122,8 @@ async function runToolLoop<T>(client: Anthropic, loop: ToolLoop<T>): Promise<T> 
     }
     const results: BetaToolResultBlockParam[] = []
     for (const tu of toolUses) {
-      const outcome = loop.handle(tu)
+      const handler = Object.hasOwn(loop.handlers, tu.name) ? loop.handlers[tu.name] : undefined
+      const outcome: ToolOutcome<T> = handler ? handler(tu.input) : { result: `Unknown tool ${tu.name}`, isError: true }
       if ('done' in outcome) return outcome.done
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: outcome.result, is_error: outcome.isError })
     }
@@ -350,15 +353,15 @@ export function estimateMacros(client: Anthropic, query: string, signal?: AbortS
     ],
     firstMessage: `Food: ${query.trim()}`,
     maxTurns: 8,
-    effort: 'medium',
     nudge: 'Please finish by calling submit_macros.',
-    what: 'The lookup',
+    cutOff: 'The lookup was cut off. Please try again.',
     giveUp: 'Claude did not finish the lookup. Please try again.',
     onResponse: (content) => seenUrls(content).forEach((u) => seen.add(u)),
-    handle: (tu) => {
-      if (tu.name !== 'submit_macros') return { result: `Unknown tool ${tu.name}`, isError: true }
-      const parsed = parseEstimate(tu.input, query, seen, energyQueried)
-      return parsed.ok ? { done: parsed.value } : { result: parsed.error, isError: true }
+    handlers: {
+      submit_macros: (input) => {
+        const parsed = parseEstimate(input, query, seen, energyQueried)
+        return parsed.ok ? { done: parsed.value } : { result: parsed.error, isError: true }
+      },
     },
     signal,
   })
@@ -617,21 +620,21 @@ export async function generateMeal(
   const solutions = new Map<string, Solution>()
   let counter = 0
 
-  const compute = (input: unknown): { content: string; isError: boolean } => {
+  const compute = (input: unknown): ToolOutcome<Recipe> => {
     const parsed = parseCompute(input)
-    if (!parsed.ok) return { content: parsed.error, isError: true }
+    if (!parsed.ok) return { result: parsed.error, isError: true }
     const requests: PortionRequest[] = []
     const seen = new Set<string>()
     for (const ing of parsed.value) {
       const w = allowed.get(ing.ware_id)
-      if (!w) return { content: `Unknown or not offered ware_id: ${ing.ware_id}. Use only the listed foods.`, isError: true }
-      if (seen.has(w.id)) return { content: `Duplicate ware_id: ${w.id}`, isError: true }
+      if (!w) return { result: `Unknown or not offered ware_id: ${ing.ware_id}. Use only the listed foods.`, isError: true }
+      if (seen.has(w.id)) return { result: `Duplicate ware_id: ${w.id}`, isError: true }
       seen.add(w.id)
       requests.push({ ware: w, minGrams: ing.min_grams, maxGrams: ing.max_grams, fixedGrams: ing.fixed_grams })
     }
     const shopCount = requests.filter((r) => r.ware.stock === 'shop').length
     if (shopCount > limit) {
-      return { content: `Uses ${shopCount} SHOP foods but the user allows at most ${limit}.`, isError: true }
+      return { result: `Uses ${shopCount} SHOP foods but the user allows at most ${limit}.`, isError: true }
     }
     const solution = solvePortions(requests, req.target)
     const id = `S${++counter}`
@@ -640,7 +643,7 @@ export async function generateMeal(
     const pct = (k: (typeof MACRO_KEYS)[number]) => `${solution.relativeDeviation[k] >= 0 ? '+' : ''}${Math.round(solution.relativeDeviation[k] * 100)}%`
     return {
       isError: false,
-      content: JSON.stringify({
+      result: JSON.stringify({
         solution_id: id,
         grams: solution.portions.map((p) => ({ ware_id: p.ware.id, name: p.ware.name, grams: p.grams })),
         totals: formatMacros(solution.totals),
@@ -682,10 +685,9 @@ export async function generateMeal(
     tools,
     firstMessage: user,
     maxTurns: 16,
-    effort: 'medium',
-    thinking: { type: 'adaptive', display: 'summarized' },
+    thinking: true,
     nudge: 'Please continue: use compute_portions and finish with submit_recipe.',
-    what: 'The response',
+    cutOff: 'The response was cut off. Please try again.',
     giveUp: 'Claude did not finish a recipe in time. Try again, perhaps with a looser target.',
     onResponse: (content) => {
       for (const block of content) {
@@ -693,14 +695,13 @@ export async function generateMeal(
         if (block.type === 'text' && block.text.trim()) onEvent({ kind: 'note', text: block.text })
       }
     },
-    handle: (tu) => {
-      if (tu.name === 'compute_portions') {
-        const r = compute(tu.input)
-        if (r.isError) onEvent({ kind: 'rejected', reason: r.content })
-        return { result: r.content, isError: r.isError }
-      }
-      if (tu.name === 'submit_recipe') return submit(tu.input)
-      return { result: `Unknown tool ${tu.name}`, isError: true }
+    handlers: {
+      compute_portions: (input) => {
+        const r = compute(input)
+        if ('result' in r && r.isError) onEvent({ kind: 'rejected', reason: r.result })
+        return r
+      },
+      submit_recipe: submit,
     },
     signal,
   })
