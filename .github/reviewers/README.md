@@ -56,5 +56,10 @@ The reviewers run with `claude-code-action` and need the repository secret
 The `PR media` check fails until the PR description has a screenshot or a
 video (drag it into the description on GitHub). A PR with nothing to see
 (CI, docs, a refactor) takes the `no-visual-change` label instead.
+
+Do not use a full-page capture (Playwright's `fullPage: true`) for a screen
+with the fixed bottom tab bar: it draws the bar at the bottom of the first
+viewport, over the middle of the page. Make the viewport as tall as the page
+and take a normal screenshot instead.
 - A brief is plain instructions; the workflow already tells every reviewer
   how to read the PR and how to post, so a brief only says what to judge.
