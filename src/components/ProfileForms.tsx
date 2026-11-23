@@ -32,9 +32,9 @@ export function GoalsForm({ onSaved }: { onSaved?: () => void }) {
   const [goals, setGoals] = useState<Macros>(state.profile?.dailyGoals ?? DEFAULT_GOALS)
   const [note, flash] = useSavedNote()
   const derivedKcal = Math.round(goals.protein * 4 + goals.carbs * 4 + goals.fat * 9)
-  // Before the first save there is no profile, so the suggested goals can be saved as they are.
   const next = { name: name.trim(), dailyGoals: goals }
   const { profile } = state
+  // Before the first save there is no profile, so the suggested goals can be saved as they are.
   const changed = !profile || next.name !== profile.name || !sameMacros(next.dailyGoals, profile.dailyGoals)
   return (
     <>
@@ -107,7 +107,7 @@ export function RulesForm({ onSaved }: { onSaved?: () => void }) {
   )
 }
 
-type Check = { kind: 'idle' } | { kind: 'checking' } | { kind: 'ok' } | { kind: 'failed'; message: string }
+type Check = { kind: 'idle' } | { kind: 'checking' } | { kind: 'ok'; saved: boolean } | { kind: 'failed'; message: string } | { kind: 'savedAnyway' }
 
 export function KeyForm({ onSaved }: { onSaved?: () => void }) {
   const { state, update } = useStore()
@@ -127,12 +127,12 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
     let result: Check
     try {
       await checkKey(key)
-      result = { kind: 'ok' }
+      result = { kind: 'ok', saved: !unchanged }
     } catch (e) {
       result = { kind: 'failed', message: describeError(e).message }
     }
     setCheck(result)
-    if (result.kind === 'ok') {
+    if (result.kind === 'ok' && result.saved) {
       update((s) => ({ ...s, settings: { ...s.settings, apiKey: key } }))
       onSaved?.()
     }
@@ -140,6 +140,7 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
 
   const saveAnyway = () => {
     update((s) => ({ ...s, settings: { ...s.settings, apiKey: key } }))
+    setCheck({ kind: 'savedAnyway' })
     onSaved?.()
   }
 
@@ -169,14 +170,20 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
         <button type="button" onClick={checkAndSave} disabled={!key || check.kind === 'checking' || (unchanged && check.kind === 'ok')}>
           {check.kind === 'checking' ? 'Checking…' : unchanged ? 'Check key' : 'Check and save key'}
         </button>
-        {check.kind === 'ok' && <span className="hint ok-note">The key works. Saved.</span>}
+        {check.kind === 'ok' && <span className="hint ok-note">{check.saved ? 'The key works. Saved.' : 'The key works.'}</span>}
+        {check.kind === 'savedAnyway' && <span className="hint">Saved without a working check.</span>}
       </div>
       {check.kind === 'failed' && (
         <div className="error" role="alert">
           <p>The check failed: {check.message}</p>
-          <button type="button" className="link" onClick={saveAnyway}>
-            Save this key anyway
-          </button>
+          {/* A saved key needs no saving; it stays as it is. */}
+          {unchanged ? (
+            <p>Your saved key is kept.</p>
+          ) : (
+            <button type="button" className="link" onClick={saveAnyway}>
+              Save this key anyway
+            </button>
+          )}
         </div>
       )}
     </>

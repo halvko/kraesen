@@ -317,7 +317,7 @@ function Planner({ profile, openSheet, goToKitchen }: PlannerProps) {
               </button>
             </li>
             <li>
-              {staples.length ? `Seasonings: ${staples.join(', ')}.` : 'No seasonings listed, so no salt or spices.'}{' '}
+              {staples.length ? `Staples: ${staples.join(', ')}.` : 'No staples listed, so no salt or spices.'}{' '}
               <button type="button" className="link" onClick={goToKitchen}>
                 {staples.length ? 'Edit' : 'Add'}
               </button>
