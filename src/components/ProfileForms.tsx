@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useStore } from '../store'
-import { DEFAULT_MODEL, type Macros, type Profile } from '../types'
+import { DEFAULT_MODEL, type Macros, type Profile, sameMacros } from '../types'
 import { MacroInputs } from './MacroInputs'
 
 // The forms below are used both in Settings and in the first-run sheets on Cook.
@@ -37,6 +37,9 @@ export function GoalsForm({ onSaved }: { onSaved?: () => void }) {
   const [goals, setGoals] = useState<Macros>(state.profile?.dailyGoals ?? DEFAULT_GOALS)
   const [note, flash] = useSavedNote()
   const derivedKcal = Math.round(goals.protein * 4 + goals.carbs * 4 + goals.fat * 9)
+  // Before the first save there is no profile, so the suggested goals can be saved as they are.
+  const { profile } = state
+  const changed = !profile || name.trim() !== profile.name || !sameMacros(goals, profile.dailyGoals)
   return (
     <>
       <label>
@@ -51,6 +54,7 @@ export function GoalsForm({ onSaved }: { onSaved?: () => void }) {
       <div className="row">
         <button
           type="button"
+          disabled={!changed}
           onClick={() => {
             update((s) => ({ ...s, profile: withProfile(s.profile, { name: name.trim(), dailyGoals: goals }) }))
             flash('Saved.')
@@ -92,7 +96,7 @@ export function RulesForm({ onSaved }: { onSaved?: () => void }) {
         />
       </label>
       <div className="row">
-        <button type="button" onClick={() => save(rules)}>
+        <button type="button" disabled={state.settings.rulesAnswered && rules.trim() === state.profile.foodRules} onClick={() => save(rules)}>
           Save rules
         </button>
         {!state.settings.rulesAnswered && !rules.trim() && (
@@ -174,7 +178,7 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
         </select>
       </label>
       <div className="row">
-        <button type="button" onClick={checkAndSave} disabled={!apiKey.trim() || check.kind === 'checking'}>
+        <button type="button" onClick={checkAndSave} disabled={!apiKey.trim() || apiKey.trim() === state.settings.apiKey || check.kind === 'checking'}>
           {check.kind === 'checking' ? 'Checking…' : 'Check and save key'}
         </button>
         {check.kind === 'ok' && <span className="hint ok-note">The key works. Saved.</span>}

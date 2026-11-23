@@ -2,6 +2,8 @@ export type MacroKey = 'protein' | 'carbs' | 'fat' | 'kcal'
 
 export const MACRO_KEYS: MacroKey[] = ['protein', 'carbs', 'fat', 'kcal']
 
+export const sameMacros = (a: Macros, b: Macros) => MACRO_KEYS.every((k) => a[k] === b[k])
+
 export const MACRO_LABELS: Record<MacroKey, string> = {
   protein: 'Protein',
   carbs: 'Carbs',

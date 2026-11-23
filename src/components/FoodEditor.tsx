@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { type Macros, type Stock, STOCK_HINT, STOCK_LABEL, STOCKS, type Ware } from '../types'
+import { type Macros, sameMacros, type Stock, STOCK_HINT, STOCK_LABEL, STOCKS, type Ware } from '../types'
 import { MacroInputs } from './MacroInputs'
 
 export interface FoodDraft {
@@ -14,6 +14,8 @@ export interface FoodDraft {
 
 interface Props {
   initial: FoodDraft
+  /** The food is already saved as `initial`, so Save stays off until something changes. */
+  saved?: boolean
   title: string
   banner?: string
   onSave: (d: FoodDraft) => void
@@ -22,9 +24,17 @@ interface Props {
   onDelete?: () => void
 }
 
-export function FoodEditor({ initial, title, banner, onSave, onCancel, onDelete }: Props) {
+export function FoodEditor({ initial, saved, title, banner, onSave, onCancel, onDelete }: Props) {
   const [d, setD] = useState<FoodDraft>(initial)
+  const clean = (f: FoodDraft): FoodDraft => ({ ...f, name: f.name.trim(), notes: f.notes?.trim() || undefined })
   const valid = d.name.trim().length > 0
+  const changed =
+    !saved ||
+    clean(d).name !== initial.name ||
+    (d.brand ?? '') !== (initial.brand ?? '') ||
+    !sameMacros(d.per100, initial.per100) ||
+    d.stock !== initial.stock ||
+    clean(d).notes !== (initial.notes || undefined)
   return (
     <div className="card editor">
       <h2>{title}</h2>
@@ -58,7 +68,7 @@ export function FoodEditor({ initial, title, banner, onSave, onCancel, onDelete 
         <input value={d.notes ?? ''} onChange={(e) => setD({ ...d, notes: e.target.value })} placeholder="e.g. very ripe, use soon" />
       </label>
       <div className="row">
-        <button type="button" disabled={!valid} onClick={() => onSave({ ...d, name: d.name.trim(), notes: d.notes?.trim() || undefined })}>
+        <button type="button" disabled={!valid || !changed} onClick={() => onSave(clean(d))}>
           Save food
         </button>
         <button type="button" className="secondary" onClick={onCancel}>

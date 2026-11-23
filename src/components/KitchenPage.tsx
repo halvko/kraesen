@@ -58,6 +58,7 @@ export function KitchenPage() {
         <FoodEditor
           title={mode.title}
           initial={mode.draft}
+          saved={!!id}
           banner={mode.banner}
           onCancel={() => setMode({ kind: 'list' })}
           onSave={(d) => save(id, d)}
