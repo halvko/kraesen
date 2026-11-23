@@ -176,7 +176,6 @@ export function KeyForm({ onSaved }: { onSaved?: () => void }) {
       {check.kind === 'failed' && (
         <div className="error" role="alert">
           <p>The check failed: {check.message}</p>
-          {/* A saved key needs no saving; it stays as it is. */}
           {unchanged ? (
             <p>Your saved key is kept.</p>
           ) : (
