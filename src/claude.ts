@@ -5,10 +5,11 @@ import type {
   BetaMessageParam,
   BetaTool,
   BetaToolResultBlockParam,
+  BetaToolUnion,
   BetaToolUseBlock,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { type PortionRequest, type Solution, solvePortions } from './solver'
-import { isObj, MACRO_KEYS, type MealFoods, mealFoods, type Macros, type Recipe, roundMacro, roundMacros, SHOP_LIMITS, type Shopping, toNonNegative, type Ware } from './types'
+import { type FoodLookup, isObj, isWebUrl, MACRO_KEYS, normalizeQuery, type SourceRef, type MealFoods, mealFoods, type Macros, type Recipe, roundMacro, roundMacros, SHOP_LIMITS, type Shopping, toNonNegative, type Ware } from './types'
 
 /** Every Claude call uses this model. */
 const MODEL = { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }
@@ -33,6 +34,9 @@ export function describeError(e: unknown): ErrorInfo {
   if (e instanceof Anthropic.PermissionDeniedError) return info(`This API key is not allowed to use ${MODEL.label}.`, true)
   if (e instanceof Anthropic.RateLimitError) return info('Rate limited by the Claude API. Wait a minute and try again.')
   if (e instanceof Anthropic.APIConnectionError) return info('Could not reach the Claude API. Are you online?')
+  if (e instanceof Anthropic.APIError && /web.?(search|fetch)/i.test(e.message)) {
+    return info(`Claude API error ${e.status ?? ''}: ${e.message} Web search may be turned off for this key's organization in the Claude Console.`)
+  }
   if (e instanceof Anthropic.APIError) return info(`Claude API error ${e.status ?? ''}: ${e.message}`)
   return info(e instanceof Error ? e.message : String(e))
 }
@@ -53,6 +57,81 @@ function textOf(msg: BetaMessage): string {
     .filter((b) => b.type === 'text')
     .map((b) => (b as { text: string }).text)
     .join('')
+}
+
+// ---------------------------------------------------------------------------
+// Tool-use loop shared by the macro lookup and the meal agent
+// ---------------------------------------------------------------------------
+
+/** A tool result to send back to Claude. */
+type ToolResult = { result: string; isError: boolean }
+/** What a client tool call produced: a result to send back to Claude, or the loop's final answer. */
+type ToolOutcome<T> = ToolResult | { done: T }
+
+interface ToolLoop<T> {
+  system: string
+  tools: BetaToolUnion[]
+  firstMessage: string
+  maxTurns: number
+  /** Shows Claude's summarized thinking in the response. */
+  thinking?: boolean
+  /** Said to Claude when it stops without calling a tool. */
+  nudge: string
+  /** Error shown when a response hits max_tokens. */
+  cutOff: string
+  /** Error shown when maxTurns runs out. */
+  giveUp: string
+  /** Called with each response before its tool calls are handled. */
+  onResponse?: (content: BetaMessage['content']) => void
+  /** One handler per client tool, by name; the loop answers any other name itself. */
+  handlers: Record<string, (input: unknown) => ToolOutcome<T>>
+  signal?: AbortSignal
+}
+
+/**
+ * Sends the conversation, resumes paused server tool turns, and answers every client tool call
+ * in a response (an unanswered call would make the next request fail) until a handler is done.
+ */
+async function runToolLoop<T>(client: Anthropic, loop: ToolLoop<T>): Promise<T> {
+  const messages: BetaMessageParam[] = [{ role: 'user', content: loop.firstMessage }]
+  for (let turn = 0; turn < loop.maxTurns; turn++) {
+    if (loop.signal?.aborted) throw new Error('Cancelled')
+    const response = await client.beta.messages.create(
+      {
+        model: MODEL.id,
+        max_tokens: 16000,
+        betas: [FALLBACK_BETA],
+        fallbacks: 'default',
+        ...(loop.thinking ? { thinking: { type: 'adaptive', display: 'summarized' } } : {}),
+        output_config: { effort: 'medium' },
+        system: loop.system,
+        tools: loop.tools,
+        messages,
+      },
+      { signal: loop.signal },
+    )
+    loop.onResponse?.(response.content)
+    if (response.stop_reason === 'refusal') throw new Error('Claude declined this request.')
+    if (response.stop_reason === 'max_tokens') throw new Error(loop.cutOff)
+    messages.push({ role: 'assistant', content: response.content as BetaContentBlockParam[] })
+    // The server's tool loop paused; sending the conversation back resumes it.
+    if (response.stop_reason === 'pause_turn') continue
+
+    const toolUses = response.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use')
+    if (toolUses.length === 0) {
+      messages.push({ role: 'user', content: loop.nudge })
+      continue
+    }
+    const results: BetaToolResultBlockParam[] = []
+    for (const tu of toolUses) {
+      const handler = Object.hasOwn(loop.handlers, tu.name) ? loop.handlers[tu.name] : undefined
+      const outcome: ToolOutcome<T> = handler ? handler(tu.input) : { result: `Unknown tool ${tu.name}`, isError: true }
+      if ('done' in outcome) return outcome.done
+      results.push({ type: 'tool_result', tool_use_id: tu.id, content: outcome.result, is_error: outcome.isError })
+    }
+    messages.push({ role: 'user', content: results })
+  }
+  throw new Error(loop.giveUp)
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +223,160 @@ export async function readNutritionLabel(
     { signal },
   )
   return parseLabelReply(msg)
+}
+
+// ---------------------------------------------------------------------------
+// Macro lookup for any food, with web search
+// ---------------------------------------------------------------------------
+
+const ESTIMATE_TOOL: BetaTool = {
+  name: 'submit_macros',
+  description:
+    'Submit the macronutrients per 100 g for the food, with the source they came from. Call this once, after ' +
+    'searching. If the text is not a food, set found to false and use 0 and empty strings for the rest.',
+  strict: true,
+  input_schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['found', 'protein_g', 'carbs_g', 'fat_g', 'fibre_g', 'alcohol_g', 'kcal', 'source_name', 'source_url', 'note'],
+    properties: {
+      found: { type: 'boolean', description: 'False if the text does not describe a food or drink.' },
+      protein_g: { type: 'number', description: 'Protein per 100 g.' },
+      carbs_g: { type: 'number', description: 'Available carbohydrate per 100 g, fibre NOT included.' },
+      fat_g: { type: 'number', description: 'Total fat per 100 g.' },
+      fibre_g: { type: 'number', description: 'Dietary fibre per 100 g; 0 if unknown.' },
+      alcohol_g: { type: 'number', description: 'Alcohol per 100 g; 0 for most foods.' },
+      kcal: { type: 'number', description: 'Energy in kcal per 100 g, as the source gives it.' },
+      source_name: {
+        type: 'string',
+        description: 'The database or site and the entry used, e.g. "Frida (DTU Fødevareinstituttet): Tomat, rå".',
+      },
+      source_url: { type: 'string', description: 'The URL of the page the numbers came from, exactly as found; empty if none.' },
+      note: {
+        type: 'string',
+        description: 'One short English sentence on what was assumed, e.g. "Raw, edible part; fibre subtracted from USDA total carbohydrate".',
+      },
+    },
+  },
+}
+
+export const LOOKUP_SYSTEM =
+  'You look up the macronutrients per 100 g of a food for a meal-planning app. The user writes in Danish or English, ' +
+  'often briefly ("hjemmedyrkede tomater", "rugbrød", "frozen peas").\n\n' +
+  'Use web search to find the numbers in a food composition database; do not answer from memory alone. Prefer, in order:\n' +
+  '1. Frida, the Danish food composition database (frida.fooddata.dk), from DTU Fødevareinstituttet.\n' +
+  '2. USDA FoodData Central (fdc.nal.usda.gov) or another national food composition database.\n' +
+  "3. For a branded product, the producer's own page or a shop page that shows the nutrition table.\n" +
+  'Use web fetch to read a promising page when the search result alone does not show the numbers.\n\n' +
+  'Rules:\n' +
+  '- Pick the entry closest to what the user wrote. Home-grown or organic produce uses the ordinary entry. Assume raw ' +
+  'and the edible part unless the text says cooked, dried, canned and so on.\n' +
+  '- Carbohydrate means available carbohydrate, without fibre. Frida and EU labels already give it that way. USDA ' +
+  '"Carbohydrate, by difference" includes fibre: subtract the fibre.\n' +
+  '- Energy in kcal; convert from kJ by dividing by 4.184 if only kJ is given.\n' +
+  '- Then call submit_macros once. source_url must be a page you actually saw in a search result or fetched.'
+
+export type MacroEstimate = { found: false } | { found: true; lookup: FoodLookup }
+
+/** Every URL Claude saw in a search result or fetched while answering, without a trailing slash. */
+function seenUrls(content: BetaMessage['content']): string[] {
+  return content.flatMap((b) => {
+    if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) return b.content.map((r) => trimSlash(r.url))
+    if (b.type === 'web_fetch_tool_result' && b.content.type === 'web_fetch_result') return [trimSlash(b.content.url)]
+    return []
+  })
+}
+
+const trimSlash = (u: string) => u.replace(/\/+$/, '')
+
+/** Energy from the macros (Atwater factors). */
+export const atwaterKcal = (m: { protein: number; carbs: number; fat: number; fibre: number; alcohol: number }) =>
+  4 * m.protein + 4 * m.carbs + 9 * m.fat + 2 * m.fibre + 7 * m.alcohol
+
+/**
+ * submit_macros read into a lookup. energyDoubt is set when the energy does not fit the macros:
+ * `numbers` identifies the submission, so the caller can ask once and accept the same numbers again.
+ */
+export type ParsedEstimate =
+  | { ok: false; error: string }
+  | { ok: true; value: MacroEstimate; energyDoubt?: { numbers: string; message: string } }
+
+/**
+ * Reads submit_macros input into a lookup, or says what was wrong. Macros over 100 g per 100 g or
+ * a missing number are errors; energy that does not fit the macros (such as kJ given as kcal) is
+ * a doubt for the caller to raise. The source URL is kept only when Claude saw it during this
+ * lookup, so a made-up link is never shown as the source.
+ */
+export function parseEstimate(input: unknown, query: string, urls: Set<string>, now = Date.now()): ParsedEstimate {
+  if (!isObj(input)) return fail('submit_macros input must be an object')
+  if (input.found !== true) return { ok: true, value: { found: false } }
+  const [protein, carbs, fat, fibre, alcohol, kcal] = [input.protein_g, input.carbs_g, input.fat_g, input.fibre_g, input.alcohol_g, input.kcal].map(
+    toNonNegative,
+  )
+  if (protein === undefined || carbs === undefined || fat === undefined || fibre === undefined || alcohol === undefined || kcal === undefined) {
+    return fail('All numbers must be non-negative')
+  }
+  if (protein + carbs + fat + fibre + alcohol > 100.5) return fail('The macros add up to more than 100 g per 100 g. Check the numbers.')
+  const expected = atwaterKcal({ protein, carbs, fat, fibre, alcohol })
+  const energyDoubt =
+    Math.abs(kcal - expected) > Math.max(15, 0.2 * expected)
+      ? {
+          numbers: JSON.stringify([protein, carbs, fat, fibre, alcohol, kcal]),
+          message:
+            `kcal ${kcal} does not fit the macros, which give about ${Math.round(expected)} kcal. ` +
+            'Check that kcal is not kJ, and that fibre and alcohol are filled in. If these are the numbers the ' +
+            'source gives (for example for polyols), submit them again unchanged.',
+        }
+      : undefined
+  const name = typeof input.source_name === 'string' ? input.source_name.trim() : ''
+  if (!name) return fail('source_name must name where the numbers came from')
+  const rawUrl = typeof input.source_url === 'string' ? input.source_url.trim() : ''
+  const note = typeof input.note === 'string' ? input.note.trim() : ''
+  const source: SourceRef = { name }
+  if (isWebUrl(rawUrl) && urls.has(trimSlash(rawUrl))) source.url = rawUrl
+  if (note) source.note = note
+  return {
+    ok: true,
+    value: {
+      found: true,
+      lookup: { key: normalizeQuery(query), query: query.trim(), per100: roundMacros({ protein, carbs, fat, kcal }), source, createdAt: now },
+    },
+    ...(energyDoubt ? { energyDoubt } : {}),
+  }
+}
+
+/** Looks up the macros per 100 g of any food with Claude and web search. The caller caches the result. */
+export function estimateMacros(client: Anthropic, query: string, signal?: AbortSignal): Promise<MacroEstimate> {
+  const seen = new Set<string>()
+  const energyQueried = new Set<string>()
+  return runToolLoop<MacroEstimate>(client, {
+    system: LOOKUP_SYSTEM,
+    tools: [
+      { type: 'web_search_20260209', name: 'web_search', max_uses: 5 },
+      { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 },
+      ESTIMATE_TOOL,
+    ],
+    firstMessage: `Food: ${query.trim()}`,
+    maxTurns: 8,
+    nudge: 'Please finish by calling submit_macros.',
+    cutOff: 'The lookup was cut off. Please try again.',
+    giveUp: 'Claude did not finish the lookup. Please try again.',
+    onResponse: (content) => seenUrls(content).forEach((u) => seen.add(u)),
+    handlers: {
+      submit_macros: (input) => {
+        const parsed = parseEstimate(input, query, seen)
+        if (!parsed.ok) return { result: parsed.error, isError: true }
+        // Some foods are right and still don't fit (polyols, erythritol): ask once, then accept the same numbers.
+        const doubt = parsed.energyDoubt
+        if (doubt && !energyQueried.has(doubt.numbers)) {
+          energyQueried.add(doubt.numbers)
+          return { result: doubt.message, isError: true }
+        }
+        return { done: parsed.value }
+      },
+    },
+    signal,
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -396,25 +629,24 @@ export async function generateMeal(
 
   const { system, user } = buildPrompt(req, foods)
   const tools = toolsFor(req.staples)
-  const messages: BetaMessageParam[] = [{ role: 'user', content: user }]
   const solutions = new Map<string, Solution>()
   let counter = 0
 
-  const compute = (input: unknown): { content: string; isError: boolean } => {
+  const compute = (input: unknown): ToolResult => {
     const parsed = parseCompute(input)
-    if (!parsed.ok) return { content: parsed.error, isError: true }
+    if (!parsed.ok) return { result: parsed.error, isError: true }
     const requests: PortionRequest[] = []
     const seen = new Set<string>()
     for (const ing of parsed.value) {
       const w = allowed.get(ing.ware_id)
-      if (!w) return { content: `Unknown or not offered ware_id: ${ing.ware_id}. Use only the listed foods.`, isError: true }
-      if (seen.has(w.id)) return { content: `Duplicate ware_id: ${w.id}`, isError: true }
+      if (!w) return { result: `Unknown or not offered ware_id: ${ing.ware_id}. Use only the listed foods.`, isError: true }
+      if (seen.has(w.id)) return { result: `Duplicate ware_id: ${w.id}`, isError: true }
       seen.add(w.id)
       requests.push({ ware: w, minGrams: ing.min_grams, maxGrams: ing.max_grams, fixedGrams: ing.fixed_grams })
     }
     const shopCount = requests.filter((r) => r.ware.stock === 'shop').length
     if (shopCount > limit) {
-      return { content: `Uses ${shopCount} SHOP foods but the user allows at most ${limit}.`, isError: true }
+      return { result: `Uses ${shopCount} SHOP foods but the user allows at most ${limit}.`, isError: true }
     }
     const solution = solvePortions(requests, req.target)
     const id = `S${++counter}`
@@ -423,7 +655,7 @@ export async function generateMeal(
     const pct = (k: (typeof MACRO_KEYS)[number]) => `${solution.relativeDeviation[k] >= 0 ? '+' : ''}${Math.round(solution.relativeDeviation[k] * 100)}%`
     return {
       isError: false,
-      content: JSON.stringify({
+      result: JSON.stringify({
         solution_id: id,
         grams: solution.portions.map((p) => ({ ware_id: p.ware.id, name: p.ware.name, grams: p.grams })),
         totals: formatMacros(solution.totals),
@@ -434,75 +666,55 @@ export async function generateMeal(
     }
   }
 
-  for (let turn = 0; turn < 16; turn++) {
-    if (signal?.aborted) throw new Error('Cancelled')
-    const response = await client.beta.messages.create(
-      {
-        model: MODEL.id,
-        max_tokens: 16000,
-        betas: [FALLBACK_BETA],
-        fallbacks: 'default',
-        thinking: { type: 'adaptive', display: 'summarized' },
-        output_config: { effort: 'medium' },
-        system,
-        tools,
-        messages,
+  const submit = (input: unknown): ToolOutcome<Recipe> => {
+    const parsed = parseSubmit(input, req.staples)
+    const sol = parsed.ok ? solutions.get(parsed.value.solution_id) : undefined
+    if (!parsed.ok || !sol) {
+      const reason = parsed.ok ? `Unknown solution_id: ${parsed.value.solution_id}` : parsed.error
+      onEvent({ kind: 'rejected', reason })
+      return { result: reason, isError: true }
+    }
+    const recipe = parsed.value
+    const kept = sol.portions.filter((p) => p.grams > 0)
+    return {
+      done: {
+        id: crypto.randomUUID(),
+        title: recipe.title,
+        summary: recipe.summary,
+        ingredients: kept.map((p) => ({ wareId: p.ware.id, name: p.ware.name, grams: p.grams, toBuy: p.ware.stock === 'shop' })),
+        extras: recipe.extras,
+        steps: recipe.steps,
+        tips: recipe.tips,
+        totals: sol.totals,
+        target: sol.target,
+        createdAt: Date.now(),
       },
-      { signal },
-    )
-
-    for (const block of response.content) {
-      if (block.type === 'thinking' && block.thinking) onEvent({ kind: 'thinking', text: block.thinking })
-      if (block.type === 'text' && block.text.trim()) onEvent({ kind: 'note', text: block.text })
     }
-
-    if (response.stop_reason === 'refusal') throw new Error('Claude declined this request.')
-    if (response.stop_reason === 'max_tokens') throw new Error('The response was cut off. Please try again.')
-
-    messages.push({ role: 'assistant', content: response.content as BetaContentBlockParam[] })
-
-    if (response.stop_reason === 'pause_turn') continue
-
-    const toolUses = response.content.filter((b): b is BetaToolUseBlock => b.type === 'tool_use')
-    if (toolUses.length === 0) {
-      messages.push({ role: 'user', content: 'Please continue: use compute_portions and finish with submit_recipe.' })
-      continue
-    }
-
-    const results: BetaToolResultBlockParam[] = []
-    for (const tu of toolUses) {
-      if (tu.name === 'compute_portions') {
-        const r = compute(tu.input)
-        if (r.isError) onEvent({ kind: 'rejected', reason: r.content })
-        results.push({ type: 'tool_result', tool_use_id: tu.id, content: r.content, is_error: r.isError })
-      } else if (tu.name === 'submit_recipe') {
-        const parsed = parseSubmit(tu.input, req.staples)
-        const sol = parsed.ok ? solutions.get(parsed.value.solution_id) : undefined
-        if (!parsed.ok || !sol) {
-          const reason = parsed.ok ? `Unknown solution_id: ${parsed.value.solution_id}` : parsed.error
-          onEvent({ kind: 'rejected', reason })
-          results.push({ type: 'tool_result', tool_use_id: tu.id, content: reason, is_error: true })
-          continue
-        }
-        const input = parsed.value
-        const kept = sol.portions.filter((p) => p.grams > 0)
-        return {
-          id: crypto.randomUUID(),
-          title: input.title,
-          summary: input.summary,
-          ingredients: kept.map((p) => ({ wareId: p.ware.id, name: p.ware.name, grams: p.grams, toBuy: p.ware.stock === 'shop' })),
-          extras: input.extras,
-          steps: input.steps,
-          tips: input.tips,
-          totals: sol.totals,
-          target: sol.target,
-          createdAt: Date.now(),
-        }
-      } else {
-        results.push({ type: 'tool_result', tool_use_id: tu.id, content: `Unknown tool ${tu.name}`, is_error: true })
-      }
-    }
-    messages.push({ role: 'user', content: results })
   }
-  throw new Error('Claude did not finish a recipe in time. Try again, perhaps with a looser target.')
+
+  return runToolLoop<Recipe>(client, {
+    system,
+    tools,
+    firstMessage: user,
+    maxTurns: 16,
+    thinking: true,
+    nudge: 'Please continue: use compute_portions and finish with submit_recipe.',
+    cutOff: 'The response was cut off. Please try again.',
+    giveUp: 'Claude did not finish a recipe in time. Try again, perhaps with a looser target.',
+    onResponse: (content) => {
+      for (const block of content) {
+        if (block.type === 'thinking' && block.thinking) onEvent({ kind: 'thinking', text: block.thinking })
+        if (block.type === 'text' && block.text.trim()) onEvent({ kind: 'note', text: block.text })
+      }
+    },
+    handlers: {
+      compute_portions: (input) => {
+        const r = compute(input)
+        if (r.isError) onEvent({ kind: 'rejected', reason: r.result })
+        return r
+      },
+      submit_recipe: submit,
+    },
+    signal,
+  })
 }

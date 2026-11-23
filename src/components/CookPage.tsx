@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentEvent } from '../claude'
+import type { AgentEvent, ErrorInfo } from '../claude'
 import { useStore } from '../store'
 import { MACRO_KEYS, type Macros, mealFoods, type Profile, type Recipe, roundMacro, type Shopping, SHOPPING_LABEL, STOCKS, type Ware } from '../types'
+import { ClaudeError } from './ClaudeError'
 import { FoodRow } from './FoodRow'
 import { MacroInputs, MacroSummary } from './MacroInputs'
 import { GoalsForm, KeyForm, RulesForm } from './ProfileForms'
@@ -168,9 +169,10 @@ function Planner({ profile, openSheet, goToKitchen }: PlannerProps) {
   const [editing, setEditing] = useState(false)
   const [events, setEvents] = useState<AgentEvent[]>([])
   const [recipe, setRecipe] = useState<Recipe | null>(null)
-  const [error, setError] = useState<{ message: string; fixKey: boolean } | null>(null)
+  const [error, setError] = useState<ErrorInfo | null>(null)
   const [saved, setSaved] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  const makeButton = useRef<HTMLButtonElement>(null)
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
@@ -324,7 +326,7 @@ function Planner({ profile, openSheet, goToKitchen }: PlannerProps) {
             </li>
           </ul>
 
-          <button type="button" onClick={run} disabled={foods.all.length === 0}>
+          <button ref={makeButton} type="button" onClick={run} disabled={foods.all.length === 0}>
             Make a meal
           </button>
           {foods.all.length === 0 && (
@@ -360,16 +362,11 @@ function Planner({ profile, openSheet, goToKitchen }: PlannerProps) {
         </section>
       )}
 
-      {error && (
-        <div className="error card" role="alert">
-          <p>{error.message}</p>
-          {error.fixKey && (
-            <button type="button" className="secondary" onClick={() => openSheet('key')}>
-              Fix the key
-            </button>
-          )}
-        </div>
-      )}
+      {error && <ClaudeError className="card" error={error} onKeySaved={() => {
+            setError(null)
+            makeButton.current?.focus()
+          }}
+        />}
 
       {recipe && (
         <section className="card">

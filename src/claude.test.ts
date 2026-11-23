@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { BetaMessage, BetaMessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { type AgentEvent, checkKey, describeError, generateMeal, type MealRequest, parseLabelReply, readNutritionLabel } from './claude'
+import { type AgentEvent, checkKey, describeError, estimateMacros, generateMeal, type MealRequest, parseEstimate, parseLabelReply, readNutritionLabel } from './claude'
 import type { Ware } from './types'
 
 const ware = (id: string, stock: Ware['stock']): Ware => ({
@@ -76,15 +76,20 @@ describe('generateMeal', () => {
       reply([
         { type: 'tool_use', id: 'a', name: 'compute_portions', input: { ingredients: [{ ware_id: 'have1' }] } },
         { type: 'tool_use', id: 'b', name: 'make_coffee', input: {} },
+        { type: 'tool_use', id: 'b2', name: 'constructor', input: {} },
       ]),
       reply([{ type: 'tool_use', id: 'c', name: 'submit_recipe', input: recipe('S1') }]),
     ])
     const r = await run(client)
     const results = lastResults(requests)
-    expect(results.map((x) => x.tool_use_id)).toEqual(['a', 'b'])
+    expect(results.map((x) => x.tool_use_id)).toEqual(['a', 'b', 'b2'])
     expect(results[0].is_error).toBe(false)
     expect(JSON.parse(results[0].content).solution_id).toBe('S1')
-    expect(results[1].is_error).toBe(true)
+    // Names of Object.prototype members are unknown tools too, not calls into the prototype.
+    expect(results.slice(1).map((x) => [x.is_error, x.content])).toEqual([
+      [true, 'Unknown tool make_coffee'],
+      [true, 'Unknown tool constructor'],
+    ])
     expect(r.title).toBe('Dish')
     expect(r.ingredients.map((i) => i.wareId)).toEqual(['have1'])
     expect(r.ingredients[0].grams).toBeGreaterThan(0)
@@ -285,3 +290,155 @@ describe('describeError', () => {
   })
 })
 
+
+describe('macro lookup', () => {
+  const FRIDA = 'https://frida.fooddata.dk/food/1'
+  const searched = (url: string) =>
+    ({ type: 'web_search_tool_result', tool_use_id: 's1', content: [{ type: 'web_search_result', url, title: 'Tomat', encrypted_content: '', page_age: null }] }) as unknown as Block
+  const fetched = (url: string) =>
+    ({ type: 'web_fetch_tool_result', tool_use_id: 'f1', content: { type: 'web_fetch_result', url, retrieved_at: null, content: {} } }) as unknown as Block
+  const input = (over: Record<string, unknown> = {}) => ({
+    found: true,
+    protein_g: 0.7,
+    carbs_g: 2.9,
+    fat_g: 0.2,
+    fibre_g: 1.2,
+    alcohol_g: 0,
+    kcal: 18.4,
+    source_name: 'Frida: Tomat, rå',
+    source_url: FRIDA,
+    note: 'Raw.',
+    ...over,
+  })
+  const submit = (over: Record<string, unknown> = {}, id = 'u1') => ({ type: 'tool_use', id, name: 'submit_macros', input: input(over) }) as Block
+  const parse = (over: Record<string, unknown> = {}, urls: string[] = [FRIDA]) => parseEstimate(input(over), 'tomat', new Set(urls), 1)
+  const lookupOf = (r: ReturnType<typeof parse>) => (r.ok && !r.energyDoubt && r.value.found ? r.value.lookup : undefined)
+  const errorOf = (r: ReturnType<typeof parse>) => (r.ok ? r.energyDoubt?.message : r.error)
+
+  it('reads macros per 100 g, rounded, with the source and note', () => {
+    expect(lookupOf(parse())).toEqual({
+      key: 'tomat',
+      query: 'tomat',
+      per100: { protein: 0.7, carbs: 2.9, fat: 0.2, kcal: 18 },
+      source: { name: 'Frida: Tomat, rå', url: FRIDA, note: 'Raw.' },
+      createdAt: 1,
+    })
+  })
+
+  it('links a source only when Claude saw that URL, ignoring a trailing slash', () => {
+    expect(lookupOf(parse({}, ['https://usda.gov/x']))?.source.url).toBeUndefined()
+    expect(lookupOf(parse({ source_url: FRIDA + '/' }))?.source.url).toBe(FRIDA + '/')
+    expect(lookupOf(parse({ source_url: 'javascript:alert(1)' }, ['javascript:alert(1)']))?.source.url).toBeUndefined()
+  })
+
+  it('accepts macros up to 100.5 g per 100 g (rounding) and rejects more', () => {
+    const fat = (g: number) => ({ protein_g: 0, carbs_g: 0, fat_g: g, fibre_g: 0, kcal: 9 * g })
+    expect(lookupOf(parse(fat(100.5)))).toBeDefined()
+    expect(errorOf(parse(fat(100.6)))).toMatch(/more than 100 g/)
+  })
+
+  it('allows energy within 15 kcal or 20 % of the macros, whichever is more', () => {
+    // Macros giving 21 kcal: the 15 kcal margin applies.
+    const low = (kcal: number) => ({ protein_g: 0, carbs_g: 5.25, fat_g: 0, fibre_g: 0, kcal })
+    expect(lookupOf(parse(low(36)))).toBeDefined()
+    expect(errorOf(parse(low(37)))).toMatch(/does not fit/)
+    // Macros giving 900 kcal: the 20 % margin applies.
+    const high = (kcal: number) => ({ protein_g: 0, carbs_g: 0, fat_g: 100, fibre_g: 0, kcal })
+    expect(lookupOf(parse(high(1080)))).toBeDefined()
+    expect(errorOf(parse(high(1081)))).toMatch(/does not fit/)
+  })
+
+  it('rejects energy that does not fit the macros, such as kJ given as kcal', () => {
+    expect(errorOf(parse({ kcal: 77 }))).toMatch(/does not fit/)
+    expect(errorOf(parse({ protein_g: 20, kcal: 0 }))).toMatch(/does not fit/)
+  })
+
+  it('questions energy that does not fit once, and accepts the same numbers sent again', async () => {
+    // Xylitol: 100 g carbohydrate (polyols) and 240 kcal.
+    const xylitol = { protein_g: 0, carbs_g: 100, fat_g: 0, fibre_g: 0, kcal: 240 }
+    const { client, requests } = scripted([
+      reply([submit(xylitol, 'a')]),
+      reply([submit({ ...xylitol, kcal: 250 }, 'b')]),
+      reply([submit(xylitol, 'c')]),
+    ])
+    const r = await estimateMacros(client, 'xylitol')
+    expect(r.found && r.lookup.per100.kcal).toBe(240)
+    const errors = requests.slice(1).map((req) => (req.at(-1)!.content as { is_error?: boolean }[])[0].is_error)
+    expect(errors).toEqual([true, true])
+  })
+
+  it('rejects a missing number instead of reading it as 0', () => {
+    expect(errorOf(parse({ fibre_g: undefined }))).toMatch(/non-negative/)
+  })
+
+  it('counts alcohol and fibre towards energy', () => {
+    // Beer: 4.5 g alcohol and 3.6 g carbs give about 46 kcal.
+    expect(lookupOf(parse({ protein_g: 0.5, carbs_g: 3.6, fat_g: 0, fibre_g: 0, alcohol_g: 4.5, kcal: 45 }))).toBeDefined()
+  })
+
+  it('rejects negative numbers and a missing source name', () => {
+    expect(errorOf(parse({ fat_g: -1 }))).toMatch(/non-negative/)
+    expect(errorOf(parse({ source_name: ' ' }))).toMatch(/source_name/)
+  })
+
+  it('reports a text that is not a food without checking its numbers', () => {
+    expect(parseEstimate({ ...input(), found: false }, 'asdf', new Set(), 1)).toEqual({ ok: true, value: { found: false } })
+    expect(parseEstimate({ ...input({ protein_g: 90, carbs_g: 90 }), found: false }, 'asdf', new Set(), 1)).toEqual({ ok: true, value: { found: false } })
+  })
+
+  it('normalizes the cache key from what the user typed', async () => {
+    const { client } = scripted([reply([searched(FRIDA), submit()])])
+    const r = await estimateMacros(client, '  Hjemmedyrkede   TOMATER! ')
+    expect(r.found && r.lookup.key).toBe('hjemmedyrkede tomater')
+  })
+
+  it('resumes a paused search by sending the turn back with no extra message', async () => {
+    const { client, requests } = scripted([reply([searched(FRIDA)], 'pause_turn'), reply([submit()])])
+    const r = await estimateMacros(client, 'tomat')
+    expect(r.found && r.lookup.source.url).toBe(FRIDA)
+    expect(requests[1].at(-1)?.role).toBe('assistant')
+  })
+
+  it('accepts a source URL that Claude fetched', async () => {
+    const { client } = scripted([reply([fetched(FRIDA), submit()])])
+    const r = await estimateMacros(client, 'tomat')
+    expect(r.found && r.lookup.source.url).toBe(FRIDA)
+  })
+
+  it('answers every tool call when the first submission is wrong, and takes a later valid one', async () => {
+    const { client, requests } = scripted([
+      reply([submit({ kcal: 77 }, 'a'), { type: 'tool_use', id: 'b', name: 'other', input: {} }, submit({ kcal: 300 }, 'c')]),
+      reply([submit()]),
+    ])
+    const r = await estimateMacros(client, 'tomat')
+    expect(r.found && r.lookup.per100.kcal).toBe(18)
+    const results = requests[1].at(-1)?.content as { tool_use_id: string; is_error?: boolean }[]
+    expect(results.map((x) => [x.tool_use_id, x.is_error])).toEqual([
+      ['a', true],
+      ['b', true],
+      ['c', true],
+    ])
+  })
+
+  it('asks Claude to finish when it replies with text only', async () => {
+    const { client, requests } = scripted([reply([{ type: 'text', text: 'Searching…' }], 'end_turn'), reply([submit()])])
+    await estimateMacros(client, 'tomat')
+    expect(requests[1].at(-1)).toEqual({ role: 'user', content: 'Please finish by calling submit_macros.' })
+  })
+
+  it('stops on a refusal or a cut-off reply', async () => {
+    await expect(estimateMacros(scripted([reply([], 'refusal')]).client, 'x')).rejects.toThrow(/declined/)
+    await expect(estimateMacros(scripted([reply([], 'max_tokens')]).client, 'x')).rejects.toThrow(/cut off/)
+  })
+
+  it('gives up after eight turns', async () => {
+    const texts = Array.from({ length: 8 }, () => reply([{ type: 'text', text: 'hm' }], 'end_turn'))
+    await expect(estimateMacros(scripted(texts).client, 'x')).rejects.toThrow(/did not finish/)
+  })
+
+  it('stops when cancelled', async () => {
+    const ac = new AbortController()
+    ac.abort()
+    await expect(estimateMacros(scripted([]).client, 'x', ac.signal)).rejects.toThrow(/Cancelled/)
+  })
+})

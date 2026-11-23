@@ -20,8 +20,9 @@ console.anthropic.com (checked with a tiny request), and your first foods.
 - **Kitchen**: every food has one setting for where it is. **Home** (fridge,
   cupboard, garden), **Freezer**, **Shop** (not at home, but you would buy it)
   or **Not now** (kept with its macros; Claude never sees it), like garden
-  courgettes in winter. Home-grown produce is added by hand with its macros per
-  100 g. Packaged products can be scanned: the barcode is looked up in
+  courgettes in winter. For a food without a label, type its name in Danish or
+  English and tap **Look up macros**, or type the macros per 100 g yourself.
+  Packaged products can be scanned: the barcode is looked up in
   [Open Food Facts](https://world.openfoodfacts.org); if it is not there,
   photograph the nutrition label and Claude reads the values for you to confirm.
   **Staples** lists the seasonings Claude may add (salt, pepper, spices). With
@@ -33,6 +34,23 @@ console.anthropic.com (checked with a tiny request), and your first foods.
   shop foods.
 - **Settings** (the gear): goals, food rules, the API key, and a JSON
   backup. The key is never exported.
+
+## How macro lookup works
+
+`estimateMacros` in `src/claude.ts` gives Claude Anthropic's server-side web
+search and web fetch tools and asks it to find the food in Frida, then USDA
+FoodData Central or another national database, then a producer's page. Claude
+answers through a `submit_macros` tool; the app sends back numbers that cannot
+be right (more than 100 g per 100 g, or a missing number), asks once about
+energy that does not fit the macros (the same numbers sent again are accepted,
+as for xylitol), and links a source only if Claude saw that URL during the
+lookup. The user
+checks the numbers before saving.
+
+Each result is kept on the device under the normalized name, so the same food
+is answered without a new search (**Look up again** forces one). Lookups are in
+the JSON backup. Web search must be allowed for the key's organization in the
+Claude Console, and costs a little per search.
 
 ## How meal planning works
 

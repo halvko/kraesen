@@ -38,7 +38,63 @@ export const STOCK_HINT: Record<Stock, string> = {
   off: 'Kept with its macros for later. Claude never sees it.',
 }
 
-export type WareSource = 'custom' | 'openfoodfacts' | 'label'
+export type WareSource = 'custom' | 'openfoodfacts' | 'label' | 'lookup'
+
+export const WARE_SOURCES: WareSource[] = ['custom', 'openfoodfacts', 'label', 'lookup']
+
+/** Where a food's looked-up macros came from, shown to the user. */
+export interface SourceRef {
+  /** E.g. "Frida (DTU Fødevareinstituttet): Tomat, rå". */
+  name: string
+  /** A page Claude actually saw during the lookup; absent when it could not be checked. */
+  url?: string
+  /** One sentence on what was assumed, e.g. "Raw, edible part". */
+  note?: string
+}
+
+/** One macro lookup by Claude, kept on the device so a name is answered from here the next time. */
+export interface FoodLookup {
+  key: string
+  /** What the user typed, e.g. "hjemmedyrkede tomater". */
+  query: string
+  per100: Macros
+  source: SourceRef
+  createdAt: number
+}
+
+/** The cache key for a lookup: case, spacing and punctuation don't matter. */
+export function normalizeQuery(q: string): string {
+  return q
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}%]+/gu, ' ')
+    .trim()
+}
+
+export const findLookup = (lookups: FoodLookup[], query: string): FoodLookup | undefined => {
+  const key = normalizeQuery(query)
+  return lookups.find((l) => l.key === key)
+}
+
+/** The added lookups in front of the others, one per name: for a name that repeats, the first one wins. */
+export function addLookups(lookups: FoodLookup[], added: FoodLookup[]): FoodLookup[] {
+  const seen = new Set<string>()
+  return [...added, ...lookups].filter((l) => !seen.has(l.key) && !!seen.add(l.key))
+}
+
+/** True when a lookup still belongs in the form: the name was not changed while Claude searched. */
+export const lookupFits = (currentName: string, lookup: FoodLookup) => normalizeQuery(currentName) === lookup.key
+
+/**
+ * A food after its macros were typed by hand. Typed numbers are the user's own, so a looked-up
+ * source no longer applies; sourceRef alone says whether there is one.
+ */
+export function withTypedMacros<T extends { per100: Macros; source: WareSource; sourceRef?: SourceRef }>(food: T, per100: Macros): T {
+  return food.sourceRef ? { ...food, per100, source: 'custom', sourceRef: undefined } : { ...food, per100 }
+}
+
+/** True for an absolute http(s) link: the only kind the app shows or stores. */
+export const isWebUrl = (u: string) => /^https?:\/\/\S+$/i.test(u)
 
 export interface Ware {
   id: string
@@ -50,6 +106,8 @@ export interface Ware {
   per100: Macros
   stock: Stock
   notes?: string
+  /** Set for foods whose macros Claude looked up, until they are edited by hand. */
+  sourceRef?: SourceRef
   createdAt: number
 }
 
@@ -95,6 +153,8 @@ export interface AppState {
   settings: Settings
   wares: Ware[]
   recipes: Recipe[]
+  /** Every macro lookup so far, newest first. */
+  lookups: FoodLookup[]
   /** True after an upgrade from version 1, until the user dismisses the note about stock and staples. */
   upgradeNotice: boolean
 }
@@ -106,6 +166,7 @@ export const emptyState = (): AppState => ({
   settings: { apiKey: '', rulesAnswered: false },
   wares: [],
   recipes: [],
+  lookups: [],
   upgradeNotice: false,
 })
 

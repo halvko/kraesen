@@ -4,12 +4,17 @@ import {
   MACRO_KEYS,
   type Macros,
   type Profile,
+  addLookups,
+  type FoodLookup,
+  isWebUrl,
+  normalizeQuery,
   type Recipe,
   type RecipeIngredient,
   type Stock,
   STOCKS,
+  type SourceRef,
   type Ware,
-  type WareSource,
+  WARE_SOURCES,
   isObj,
   toNonNegative,
 } from './types'
@@ -44,6 +49,30 @@ function stockFromV1(list: unknown, status: unknown): { stock: Stock; frozenNote
   return { stock: 'off', frozenNote: false }
 }
 
+/** A source reference; a url is kept only if it is a web link, so a backup can't plant a javascript: link. */
+function readRef(v: unknown): SourceRef | undefined {
+  if (!isObj(v)) return undefined
+  const name = str(v.name)?.trim()
+  if (!name) return undefined
+  const url = str(v.url)
+  const note = str(v.note)?.trim() || undefined
+  return { name, ...(url && isWebUrl(url) ? { url } : {}), ...(note ? { note } : {}) }
+}
+
+function readLookup(v: unknown): FoodLookup | null {
+  if (!isObj(v)) return null
+  const query = str(v.query)?.trim()
+  const source = readRef(v.source)
+  const key = query && normalizeQuery(query)
+  if (!query || !key || !source) return null
+  return { key, query, per100: readMacros(v.per100), source, createdAt: nonNegative(v.createdAt) }
+}
+
+/** Stored lookups, re-keyed from their query; for a name that repeats, the first one wins. */
+function readLookups(v: unknown): FoodLookup[] {
+  return addLookups([], (Array.isArray(v) ? v : []).map(readLookup).filter((l): l is FoodLookup => l !== null))
+}
+
 function readWare(v: unknown, fromV1: boolean): Ware | null {
   if (!isObj(v)) return null
   const id = str(v.id)
@@ -63,10 +92,12 @@ function readWare(v: unknown, fromV1: boolean): Ware | null {
     name,
     brand: str(v.brand) || undefined,
     barcode: str(v.barcode) || undefined,
-    source: pick<WareSource>(v.source, ['custom', 'openfoodfacts', 'label'], 'custom'),
+    source: pick(v.source, WARE_SOURCES, 'custom'),
     per100: readMacros(v.per100),
     stock,
     notes,
+    // Only a looked-up food has a source; anything else would show a source its numbers did not come from.
+    sourceRef: v.source === 'lookup' ? readRef(v.sourceRef) : undefined,
     createdAt: nonNegative(v.createdAt),
   }
 }
@@ -139,6 +170,7 @@ export function normalize(s: unknown): AppState {
     },
     wares,
     recipes: list(s.recipes, readRecipe),
+    lookups: readLookups(s.lookups),
     upgradeNotice: fromV1 ? wares.length > 0 : s.upgradeNotice === true,
   }
 }
@@ -162,6 +194,8 @@ export function importJson(text: string, current: AppState): AppState {
   }
   const next = normalize(parsed)
   next.settings.apiKey = current.settings.apiKey
+  // Lookups are a cache: keep this device's too, with the imported one winning for a name in both.
+  next.lookups = addLookups(current.lookups, next.lookups)
   next.upgradeNotice ||= current.upgradeNotice
   return next
 }
