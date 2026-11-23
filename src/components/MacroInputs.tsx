@@ -1,5 +1,5 @@
 import { relativeDeviation } from '../solver'
-import { MACRO_KEYS, MACRO_LABELS, MACRO_UNITS, type Macros, roundMacro } from '../types'
+import { MACRO_KEYS, MACRO_LABELS, MACRO_UNITS, type Macros, roundMacro, toNonNegative } from '../types'
 
 interface Props {
   value: Macros
@@ -26,8 +26,7 @@ export function MacroInputs({ value, onChange, suffix, idPrefix }: Props) {
             value={Number.isFinite(value[k]) ? value[k] : ''}
             onChange={(e) => {
               // Typed values bypass min={0}; macros are never negative.
-              const n = Number(e.target.value)
-              onChange({ ...value, [k]: Number.isFinite(n) ? Math.max(0, n) : 0 })
+              onChange({ ...value, [k]: toNonNegative(e.target.value) ?? 0 })
             }}
           />
         </label>

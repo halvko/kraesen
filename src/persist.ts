@@ -11,6 +11,7 @@ import {
   type WareList,
   type WareSource,
   type WareStatus,
+  toNonNegative,
 } from './types'
 
 // Stored and imported data is read tolerantly: anything malformed is repaired or
@@ -22,11 +23,8 @@ type Loose = Record<string, unknown>
 const isObj = (v: unknown): v is Loose => !!v && typeof v === 'object' && !Array.isArray(v)
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : undefined)
 
-/** A finite, non-negative number, or 0. Numeric strings are accepted. */
-export function nonNegative(v: unknown): number {
-  const n = typeof v === 'string' ? parseFloat(v) : typeof v === 'number' ? v : NaN
-  return Number.isFinite(n) && n > 0 ? n : 0
-}
+/** A usable macro or gram value, or 0. */
+export const nonNegative = (v: unknown): number => toNonNegative(v) ?? 0
 
 export function readMacros(v: unknown): Macros {
   const o = isObj(v) ? v : {}

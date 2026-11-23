@@ -167,6 +167,6 @@ describe('parseLabelReply', () => {
     expect(() => parseLabelReply(text('{"readable": tr', 'max_tokens'))).toThrow('cut off')
     expect(() => parseLabelReply({ stop_reason: 'end_turn', content: [] } as unknown as BetaMessage)).toThrow('readable answer')
     expect(() => parseLabelReply(text(JSON.stringify({ readable: true, protein_g: -1, carbs_g: 1, fat_g: 1, kcal: 1 })))).toThrow('do not make sense')
-    expect(() => parseLabelReply(text(JSON.stringify({ readable: true, protein_g: '5', carbs_g: 1, fat_g: 1, kcal: 1 })))).toThrow('do not make sense')
+    expect(() => parseLabelReply(text(JSON.stringify({ readable: true, protein_g: 'five', carbs_g: 1, fat_g: 1, kcal: 1 })))).toThrow('do not make sense')
   })
 })

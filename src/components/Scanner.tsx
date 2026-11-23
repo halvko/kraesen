@@ -29,8 +29,9 @@ export function Scanner({ onResult, onCancel }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
   const controlsRef = useRef<IScannerControls | null>(null)
   // Aborted on unmount, so a lookup or label read that finishes after Cancel
-  // neither reopens the editor nor keeps a Claude request running.
-  const abortRef = useRef(new AbortController())
+  // neither reopens the editor nor keeps a Claude request running. Made inside
+  // the effect so StrictMode's dev remount gets a fresh, unaborted controller.
+  const abortRef = useRef<AbortController>(new AbortController())
   const [phase, setPhase] = useState<Phase>('scanning')
   const [barcode, setBarcode] = useState('')
   const [manual, setManual] = useState('')
@@ -38,9 +39,15 @@ export function Scanner({ onResult, onCancel }: Props) {
   const [cameraError, setCameraError] = useState('')
 
   useEffect(() => {
-    const ac = abortRef.current
+    const ac = new AbortController()
+    abortRef.current = ac
     return () => ac.abort()
   }, [])
+
+  const scanAgain = () => {
+    setError('')
+    setPhase('scanning')
+  }
 
   const handleCode = async (code: string) => {
     controlsRef.current?.stop()
@@ -70,7 +77,7 @@ export function Scanner({ onResult, onCancel }: Props) {
       setPhase('notfound')
     } catch (e) {
       if (signal.aborted) return
-      setError(`Lookup failed: ${describeError(e)}`)
+      setError(`Lookup failed: ${describeError(e).message}`)
       setPhase('notfound')
     }
   }
@@ -128,7 +135,7 @@ export function Scanner({ onResult, onCancel }: Props) {
       )
     } catch (e) {
       if (signal.aborted) return
-      setError(describeError(e))
+      setError(describeError(e).message)
       setPhase('notfound')
     }
   }
@@ -172,7 +179,7 @@ export function Scanner({ onResult, onCancel }: Props) {
             <button type="button" onClick={() => fileRef.current?.click()}>
               Photograph label
             </button>
-            <button type="button" className="secondary" onClick={() => setPhase('scanning')}>
+            <button type="button" className="secondary" onClick={scanAgain}>
               Scan again
             </button>
           </div>
@@ -190,15 +197,15 @@ export function Scanner({ onResult, onCancel }: Props) {
           />
         </>
       )}
-      {phase === 'duplicate' && (
-        <button type="button" className="secondary" onClick={() => setPhase('scanning')}>
-          Scan another
-        </button>
-      )}
       {error && (
         <p className="error" role="alert">
           {error}
         </p>
+      )}
+      {phase === 'duplicate' && (
+        <button type="button" className="secondary" onClick={scanAgain}>
+          Scan another
+        </button>
       )}
       <div className="row">
         <button type="button" className="secondary" onClick={onCancel}>

@@ -105,3 +105,13 @@ export function partitionWares(wares: Ware[]): { have: Ware[]; buy: Ware[] } {
   const usable = wares.filter((w) => w.status !== 'out')
   return { have: usable.filter((w) => w.list === 'have'), buy: usable.filter((w) => w.list === 'buy') }
 }
+
+/**
+ * The one rule for macro and gram values from outside the app (stored data, Open
+ * Food Facts, Claude, form inputs): a finite number ≥ 0, numeric strings allowed.
+ * Returns undefined otherwise, so each caller picks its own fallback.
+ */
+export function toNonNegative(v: unknown): number | undefined {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : typeof v === 'number' ? v : NaN
+  return Number.isFinite(n) && n >= 0 ? n : undefined
+}

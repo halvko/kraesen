@@ -1,4 +1,4 @@
-import type { Macros } from './types'
+import { type Macros, toNonNegative as num } from './types'
 
 export interface OffProduct {
   barcode: string
@@ -9,10 +9,6 @@ export interface OffProduct {
   incomplete: boolean
 }
 
-const num = (v: unknown): number | undefined => {
-  const n = typeof v === 'string' ? parseFloat(v) : typeof v === 'number' ? v : NaN
-  return Number.isFinite(n) && n >= 0 ? n : undefined
-}
 
 /**
  * Looks up a barcode in Open Food Facts (read API, no key, CORS enabled).

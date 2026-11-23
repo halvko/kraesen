@@ -1,7 +1,7 @@
 # Kraesen
 
 A meal planner for macro goals and a limited selection of wares: whatever is
-in the fridge, the garden or the freezer, plus a few things you are willing to
+in the fridge, the garden or the freezer, plus a few wares you are willing to
 buy. Claude picks ingredients and writes the recipe; the app computes the exact
 grams so the meal hits your protein, carb, fat and energy target.
 

@@ -62,7 +62,7 @@ export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void
     setError(null)
     setSaved(false)
     // The Claude SDK is loaded on first use to keep the initial download small.
-    const { describeError, generateMeal, isKeyError, makeClient } = await import('../claude')
+    const { describeError, generateMeal, makeClient } = await import('../claude')
     try {
       const r = await generateMeal(
         makeClient(state.settings.apiKey),
@@ -74,7 +74,7 @@ export function MealPage({ goToSettings, goToWares }: { goToSettings: () => void
       )
       setRecipe(r)
     } catch (e) {
-      if (!ac.signal.aborted) setError({ message: describeError(e), fixInSettings: isKeyError(e) })
+      if (!ac.signal.aborted) setError(describeError(e))
     } finally {
       setRunning(false)
     }

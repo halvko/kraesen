@@ -8,7 +8,7 @@ import type {
   BetaToolUseBlock,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import { type PortionRequest, type Solution, solvePortions } from './solver'
-import { MACRO_KEYS, type Macros, partitionWares, type Recipe, roundMacro, roundMacros, type Ware } from './types'
+import { MACRO_KEYS, type Macros, partitionWares, type Recipe, roundMacro, roundMacros, toNonNegative, type Ware } from './types'
 
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 
@@ -17,18 +17,21 @@ export function makeClient(apiKey: string) {
   return new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 2 })
 }
 
-/** True when the user should fix their API key or model in Settings. */
-export function isKeyError(e: unknown): boolean {
-  return e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError
+export interface ErrorInfo {
+  message: string
+  /** True when the user should fix their API key or model in Settings. */
+  fixInSettings: boolean
 }
 
-export function describeError(e: unknown): string {
-  if (e instanceof Anthropic.AuthenticationError) return 'The API key was rejected. Check it in Settings.'
-  if (e instanceof Anthropic.PermissionDeniedError) return 'This API key is not allowed to use that model.'
-  if (e instanceof Anthropic.RateLimitError) return 'Rate limited by the Claude API. Wait a minute and try again.'
-  if (e instanceof Anthropic.APIConnectionError) return 'Could not reach the Claude API. Are you online?'
-  if (e instanceof Anthropic.APIError) return `Claude API error ${e.status ?? ''}: ${e.message}`
-  return e instanceof Error ? e.message : String(e)
+/** Classifies an error once, so its message and the action offered for it cannot drift apart. */
+export function describeError(e: unknown): ErrorInfo {
+  const info = (message: string, fixInSettings = false) => ({ message, fixInSettings })
+  if (e instanceof Anthropic.AuthenticationError) return info('The API key was rejected. Check it in Settings.', true)
+  if (e instanceof Anthropic.PermissionDeniedError) return info('This API key is not allowed to use that model.', true)
+  if (e instanceof Anthropic.RateLimitError) return info('Rate limited by the Claude API. Wait a minute and try again.')
+  if (e instanceof Anthropic.APIConnectionError) return info('Could not reach the Claude API. Are you online?')
+  if (e instanceof Anthropic.APIError) return info(`Claude API error ${e.status ?? ''}: ${e.message}`)
+  return info(e instanceof Error ? e.message : String(e))
 }
 
 function textOf(msg: BetaMessage): string {
@@ -69,8 +72,6 @@ const LABEL_SCHEMA = {
   },
 } as const
 
-const finiteNonNegative = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
-
 /** Turns Claude's reply about a label photo into a reading, or throws a message the user can act on. */
 export function parseLabelReply(msg: Pick<BetaMessage, 'stop_reason' | 'content'>): LabelReading {
   if (msg.stop_reason === 'refusal') throw new Error('Claude declined to read this image.')
@@ -83,13 +84,15 @@ export function parseLabelReply(msg: Pick<BetaMessage, 'stop_reason' | 'content'
   }
   if (!raw || typeof raw !== 'object') throw new Error('Claude did not return a readable answer. Please try again.')
   if (raw.readable !== true) return { readable: false, name: '', brand: '', per100: { protein: 0, carbs: 0, fat: 0, kcal: 0 }, basis_note: '' }
-  const nums = [raw.protein_g, raw.carbs_g, raw.fat_g, raw.kcal]
-  if (!nums.every(finiteNonNegative)) throw new Error('Claude returned numbers that do not make sense. Please try again.')
+  const [protein, carbs, fat, kcal] = [raw.protein_g, raw.carbs_g, raw.fat_g, raw.kcal].map(toNonNegative)
+  if (protein === undefined || carbs === undefined || fat === undefined || kcal === undefined) {
+    throw new Error('Claude returned numbers that do not make sense. Please try again.')
+  }
   return {
     readable: true,
     name: typeof raw.name === 'string' ? raw.name : '',
     brand: typeof raw.brand === 'string' ? raw.brand : '',
-    per100: { protein: raw.protein_g as number, carbs: raw.carbs_g as number, fat: raw.fat_g as number, kcal: Math.round(raw.kcal as number) },
+    per100: { protein, carbs, fat, kcal: Math.round(kcal) },
     basis_note: typeof raw.basis_note === 'string' ? raw.basis_note : '',
   }
 }
@@ -256,8 +259,11 @@ function buildPrompt(req: MealRequest, have: Ware[], buy: Ware[], limit: number)
   return { system, user }
 }
 
-interface ComputeInput {
-  ingredients: { ware_id: string; min_grams?: number; max_grams?: number; fixed_grams?: number }[]
+interface ComputeIngredient {
+  ware_id: string
+  min_grams?: number
+  max_grams?: number
+  fixed_grams?: number
 }
 interface SubmitInput {
   solution_id: string
@@ -268,20 +274,39 @@ interface SubmitInput {
   tips?: string
 }
 
-const optionalGrams = (v: unknown) => v === undefined || finiteNonNegative(v)
+/** A tool input checked and rebuilt as its type, or a message telling Claude what was wrong. */
+type Parsed<T> = { ok: true; value: T } | { ok: false; error: string }
+const fail = (error: string): { ok: false; error: string } => ({ ok: false, error })
+
+type Loose = Record<string, unknown>
+const isObj = (v: unknown): v is Loose => !!v && typeof v === 'object' && !Array.isArray(v)
 const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
 
-/** Checks a submit_recipe input; returns an error message for Claude, or null if it is usable. */
-function submitProblem(input: unknown): string | null {
-  if (!input || typeof input !== 'object') return 'submit_recipe input must be an object'
-  const i = input as Record<string, unknown>
-  if (typeof i.solution_id !== 'string') return 'solution_id must be a string'
-  if (typeof i.title !== 'string' || !i.title.trim()) return 'title must be a non-empty string'
-  if (typeof i.summary !== 'string') return 'summary must be a string'
-  if (!isStringArray(i.steps) || i.steps.length === 0) return 'steps must be a non-empty array of strings'
-  if (!isStringArray(i.extras)) return 'extras must be an array of strings'
-  if (i.tips !== undefined && typeof i.tips !== 'string') return 'tips must be a string'
-  return null
+function parseCompute(input: unknown): Parsed<ComputeIngredient[]> {
+  if (!isObj(input) || !Array.isArray(input.ingredients) || input.ingredients.length === 0) {
+    return fail('ingredients must be a non-empty array')
+  }
+  const out: ComputeIngredient[] = []
+  for (const ing of input.ingredients as unknown[]) {
+    if (!isObj(ing) || typeof ing.ware_id !== 'string') return fail('Each ingredient must be an object with a string ware_id')
+    const bound = (v: unknown) => (v === undefined ? { ok: true as const, n: undefined } : { ok: toNonNegative(v) !== undefined, n: toNonNegative(v) })
+    const [min, max, fixed] = [ing.min_grams, ing.max_grams, ing.fixed_grams].map(bound)
+    if (!min.ok || !max.ok || !fixed.ok) return fail(`Bounds for ${ing.ware_id} must be non-negative numbers`)
+    out.push({ ware_id: ing.ware_id, min_grams: min.n, max_grams: max.n, fixed_grams: fixed.n })
+  }
+  return { ok: true, value: out }
+}
+
+function parseSubmit(input: unknown): Parsed<SubmitInput> {
+  if (!isObj(input)) return fail('submit_recipe input must be an object')
+  const { solution_id, title, summary, steps, extras, tips } = input
+  if (typeof solution_id !== 'string') return fail('solution_id must be a string')
+  if (typeof title !== 'string' || !title.trim()) return fail('title must be a non-empty string')
+  if (typeof summary !== 'string') return fail('summary must be a string')
+  if (!isStringArray(steps) || steps.length === 0) return fail('steps must be a non-empty array of strings')
+  if (!isStringArray(extras)) return fail('extras must be an array of strings')
+  if (tips !== undefined && typeof tips !== 'string') return fail('tips must be a string')
+  return { ok: true, value: { solution_id, title: title.trim(), summary, steps, extras, tips } }
 }
 
 export async function generateMeal(
@@ -304,22 +329,15 @@ export async function generateMeal(
   const solutions = new Map<string, Solution>()
   let counter = 0
 
-  const compute = (input: ComputeInput): { content: string; isError: boolean } => {
-    if (!input || !Array.isArray(input.ingredients) || input.ingredients.length === 0) {
-      return { content: 'ingredients must be a non-empty array', isError: true }
-    }
+  const compute = (input: unknown): { content: string; isError: boolean } => {
+    const parsed = parseCompute(input)
+    if (!parsed.ok) return { content: parsed.error, isError: true }
     const requests: PortionRequest[] = []
     const seen = new Set<string>()
-    for (const ing of input.ingredients) {
-      if (!ing || typeof ing !== 'object' || typeof ing.ware_id !== 'string') {
-        return { content: 'Each ingredient must be an object with a string ware_id', isError: true }
-      }
+    for (const ing of parsed.value) {
       const w = allowed.get(ing.ware_id)
       if (!w) return { content: `Unknown or not allowed ware_id: ${ing.ware_id}`, isError: true }
       if (seen.has(w.id)) return { content: `Duplicate ware_id: ${w.id}`, isError: true }
-      if (!optionalGrams(ing.min_grams) || !optionalGrams(ing.max_grams) || !optionalGrams(ing.fixed_grams)) {
-        return { content: `Bounds for ${w.id} must be non-negative numbers`, isError: true }
-      }
       seen.add(w.id)
       requests.push({ ware: w, minGrams: ing.min_grams, maxGrams: ing.max_grams, fixedGrams: ing.fixed_grams })
     }
@@ -383,23 +401,23 @@ export async function generateMeal(
     const results: BetaToolResultBlockParam[] = []
     for (const tu of toolUses) {
       if (tu.name === 'compute_portions') {
-        const r = compute(tu.input as ComputeInput)
+        const r = compute(tu.input)
         if (r.isError) onEvent({ kind: 'rejected', reason: r.content })
         results.push({ type: 'tool_result', tool_use_id: tu.id, content: r.content, is_error: r.isError })
       } else if (tu.name === 'submit_recipe') {
-        const problem = submitProblem(tu.input)
-        const input = tu.input as SubmitInput
-        const sol = problem ? undefined : solutions.get(input.solution_id)
-        if (!sol) {
-          const reason = problem ?? `Unknown solution_id: ${input.solution_id}`
+        const parsed = parseSubmit(tu.input)
+        const sol = parsed.ok ? solutions.get(parsed.value.solution_id) : undefined
+        if (!parsed.ok || !sol) {
+          const reason = parsed.ok ? `Unknown solution_id: ${parsed.value.solution_id}` : parsed.error
           onEvent({ kind: 'rejected', reason })
           results.push({ type: 'tool_result', tool_use_id: tu.id, content: reason, is_error: true })
           continue
         }
+        const input = parsed.value
         const kept = sol.portions.filter((p) => p.grams > 0)
         return {
           id: crypto.randomUUID(),
-          title: input.title.trim(),
+          title: input.title,
           summary: input.summary,
           ingredients: kept.map((p) => ({ wareId: p.ware.id, name: p.ware.name, grams: p.grams, fromBuyList: p.ware.list === 'buy' })),
           extras: input.extras,
