@@ -1,28 +1,29 @@
 import { useState } from 'react'
-import { LIST_LABEL, type Macros, type Ware, type WareList, type WareStatus } from '../types'
+import { type Macros, type Stock, STOCK_HINT, STOCK_LABEL, STOCKS, type Ware } from '../types'
 import { MacroInputs } from './MacroInputs'
 
-export interface WareDraft {
+export interface FoodDraft {
   name: string
   brand?: string
   barcode?: string
   source: Ware['source']
   per100: Macros
-  list: WareList
-  status: WareStatus
+  stock: Stock
   notes?: string
 }
 
 interface Props {
-  initial: WareDraft
+  initial: FoodDraft
   title: string
   banner?: string
-  onSave: (d: WareDraft) => void
+  onSave: (d: FoodDraft) => void
   onCancel: () => void
+  /** Shown only when editing a saved food. */
+  onDelete?: () => void
 }
 
-export function WareEditor({ initial, title, banner, onSave, onCancel }: Props) {
-  const [d, setD] = useState<WareDraft>(initial)
+export function FoodEditor({ initial, title, banner, onSave, onCancel, onDelete }: Props) {
+  const [d, setD] = useState<FoodDraft>(initial)
   const valid = d.name.trim().length > 0
   return (
     <div className="card editor">
@@ -39,39 +40,36 @@ export function WareEditor({ initial, title, banner, onSave, onCancel }: Props) 
         </label>
       )}
       <h3>Per 100 g</h3>
-      <MacroInputs idPrefix="ware" value={d.per100} onChange={(per100) => setD({ ...d, per100 })} />
-      <div className="two-col">
-        <label>
-          <span>List</span>
-          <select value={d.list} onChange={(e) => setD({ ...d, list: e.target.value as WareList })}>
-            {Object.entries(LIST_LABEL).map(([v, l]) => (
-              <option key={v} value={v}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>Availability</span>
-          <select value={d.status} onChange={(e) => setD({ ...d, status: e.target.value as WareStatus })}>
-            <option value="available">Available</option>
-            <option value="frozen">Frozen</option>
-            <option value="out">Out</option>
-          </select>
-        </label>
-      </div>
+      <MacroInputs idPrefix="food" value={d.per100} onChange={(per100) => setD({ ...d, per100 })} />
+      <fieldset className="stock-options">
+        <legend>Where is it?</legend>
+        {STOCKS.map((s) => (
+          <label key={s} className={d.stock === s ? 'stock-option on' : 'stock-option'}>
+            <input type="radio" name="stock" value={s} checked={d.stock === s} onChange={() => setD({ ...d, stock: s })} />
+            <span>
+              <strong>{STOCK_LABEL[s]}</strong>
+              <small>{STOCK_HINT[s]}</small>
+            </span>
+          </label>
+        ))}
+      </fieldset>
       <label>
-        <span>Notes for the meal planner (optional)</span>
+        <span>Notes for Claude (optional)</span>
         <input value={d.notes ?? ''} onChange={(e) => setD({ ...d, notes: e.target.value })} placeholder="e.g. very ripe, use soon" />
       </label>
       <div className="row">
         <button type="button" disabled={!valid} onClick={() => onSave({ ...d, name: d.name.trim(), notes: d.notes?.trim() || undefined })}>
-          Save ware
+          Save food
         </button>
         <button type="button" className="secondary" onClick={onCancel}>
           Cancel
         </button>
       </div>
+      {onDelete && (
+        <button type="button" className="secondary danger delete-food" onClick={onDelete}>
+          Delete this food
+        </button>
+      )}
     </div>
   )
 }

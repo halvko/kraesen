@@ -18,14 +18,15 @@ Read the diff only to find which screens the change touches.
 2. Open the app at a phone size (390×844) and walk through every screen
    and flow the diff touches, plus one step before and after it. Take a
    screenshot of each state you judge, saved under `review-screenshots/`
-   with a name saying what it shows (`wares-empty-phone.png`). Repeat the
+   with a name saying what it shows (`kitchen-empty-phone.png`). Repeat the
    key screens at a desktop size (1280×800) and in dark mode
    (`prefers-color-scheme: dark`).
 3. The app needs a Claude API key for meal planning and label reading. No
    key is available here: enter `sk-ant-test` where a key is required, and
-   judge the error the app shows instead of a result. Everything else
-   (goals, wares, lists, availability, export) works offline; add a few
-   wares by hand to see lists with content.
+   judge the error the app shows instead of a result. The key check in the
+   first-run setup fails too; "Continue anyway" finishes that step. Everything else
+   (goals, food rules, foods, stock, staples, export) works offline; add a few
+   foods by hand to see Kitchen with content.
 
 Judge:
 

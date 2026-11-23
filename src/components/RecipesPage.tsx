@@ -11,7 +11,7 @@ export function RecipesPage() {
       <div className="page">
         <section className="card">
           <h2>Saved recipes</h2>
-          <p className="hint">Recipes you save from the planner show up here.</p>
+          <p className="hint">Recipes you save on Cook show up here.</p>
         </section>
       </div>
     )

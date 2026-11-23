@@ -3,10 +3,10 @@ import { useEffect, useRef, useState } from 'react'
 import { describeError, makeClient, readNutritionLabel } from '../claude'
 import { lookupBarcode } from '../openfoodfacts'
 import { useStore } from '../store'
-import type { WareDraft } from './WareEditor'
+import type { FoodDraft } from './FoodEditor'
 
 interface Props {
-  onResult: (draft: WareDraft, banner: string) => void
+  onResult: (draft: FoodDraft, banner: string) => void
   onCancel: () => void
 }
 
@@ -67,7 +67,7 @@ export function Scanner({ onResult, onCancel }: Props) {
       if (signal.aborted) return
       if (p) {
         onResult(
-          { name: p.name, brand: p.brand ?? '', barcode: p.barcode, source: 'openfoodfacts', per100: p.per100, list: 'have', status: 'available' },
+          { name: p.name, brand: p.brand ?? '', barcode: p.barcode, source: 'openfoodfacts', per100: p.per100, stock: 'home' },
           p.incomplete
             ? 'Found in Open Food Facts, but some values were missing and set to 0. Please check them against the label.'
             : 'Found in Open Food Facts. Check the numbers before saving.',
@@ -130,7 +130,7 @@ export function Scanner({ onResult, onCancel }: Props) {
         return
       }
       onResult(
-        { name: r.name || '', brand: r.brand || '', barcode: barcode || undefined, source: 'label', per100: r.per100, list: 'have', status: 'available' },
+        { name: r.name || '', brand: r.brand || '', barcode: barcode || undefined, source: 'label', per100: r.per100, stock: 'home' },
         `Read from your photo by Claude. ${r.basis_note} Please confirm or correct every number before saving.`,
       )
     } catch (e) {
@@ -142,7 +142,7 @@ export function Scanner({ onResult, onCancel }: Props) {
 
   return (
     <div className="card">
-      <h2>Scan a ware</h2>
+      <h2>Scan a food</h2>
       {phase === 'scanning' && (
         <>
           {cameraError ? (

@@ -7,10 +7,10 @@ import {
   type Profile,
   type Recipe,
   type RecipeIngredient,
+  type Stock,
+  STOCKS,
   type Ware,
-  type WareList,
   type WareSource,
-  type WareStatus,
   isObj,
   toNonNegative,
 } from './types'
@@ -32,13 +32,33 @@ export function readMacros(v: unknown): Macros {
 const pick = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T =>
   allowed.includes(v as T) ? (v as T) : fallback
 
+/**
+ * Version 1 kept two fields per food: a list (have, buy, neither) and a status
+ * (available, frozen, out). Version 2 has one stock value. Where the old pair is
+ * unclear, the food goes to the state that offers less to Claude: the app must
+ * never decide that the user would buy something.
+ */
+function stockFromV1(list: unknown, status: unknown): { stock: Stock; frozenNote: boolean } {
+  if (status === 'out') return { stock: 'off', frozenNote: false }
+  if (list === 'have') return { stock: status === 'frozen' ? 'freezer' : 'home', frozenNote: false }
+  if (list === 'buy') return { stock: 'shop', frozenNote: status === 'frozen' }
+  return { stock: 'off', frozenNote: false }
+}
+
 function readWare(v: unknown): Ware | null {
   if (!isObj(v)) return null
   const id = str(v.id)
   const name = str(v.name)?.trim()
   if (!id || !name) return null
-  // Early builds called the third list "catalog".
-  const list = v.list === 'catalog' ? 'neither' : v.list
+  let notes = str(v.notes)?.trim() || undefined
+  let stock: Stock
+  if (STOCKS.includes(v.stock as Stock)) {
+    stock = v.stock as Stock
+  } else {
+    const old = stockFromV1(v.list, v.status)
+    stock = old.stock
+    if (old.frozenNote) notes = notes ? `frozen; ${notes}` : 'frozen'
+  }
   return {
     id,
     name,
@@ -46,14 +66,26 @@ function readWare(v: unknown): Ware | null {
     barcode: str(v.barcode) || undefined,
     source: pick<WareSource>(v.source, ['custom', 'openfoodfacts', 'label'], 'custom'),
     per100: readMacros(v.per100),
-    list: pick<WareList>(list, ['have', 'buy', 'neither'], 'neither'),
-    status: pick<WareStatus>(v.status, ['available', 'frozen', 'out'], 'available'),
-    notes: str(v.notes) || undefined,
+    stock,
+    notes,
     createdAt: nonNegative(v.createdAt),
   }
 }
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.map(str).filter((s): s is string => !!s) : [])
+
+/** Staples trimmed, without blanks, and without repeats that differ only in case. */
+export function cleanStaples(v: unknown): string[] {
+  const seen = new Set<string>()
+  return strings(v)
+    .map((x) => x.trim())
+    .filter((x) => {
+      const k = x.toLowerCase()
+      if (!x || seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
+}
 
 function readRecipe(v: unknown): Recipe | null {
   if (!isObj(v)) return null
@@ -62,7 +94,7 @@ function readRecipe(v: unknown): Recipe | null {
   if (!id || !title || !Array.isArray(v.ingredients)) return null
   const ingredients: RecipeIngredient[] = v.ingredients.flatMap((i) => {
     if (!isObj(i) || !str(i.name)) return []
-    return [{ wareId: str(i.wareId) ?? '', name: str(i.name)!, grams: nonNegative(i.grams), fromBuyList: i.fromBuyList === true }]
+    return [{ wareId: str(i.wareId) ?? '', name: str(i.name)!, grams: nonNegative(i.grams), toBuy: i.toBuy === true || i.fromBuyList === true }]
   })
   return {
     id,
@@ -80,7 +112,12 @@ function readRecipe(v: unknown): Recipe | null {
 
 function readProfile(v: unknown): Profile | null {
   if (!isObj(v) || !isObj(v.dailyGoals)) return null
-  return { name: str(v.name) ?? '', dailyGoals: readMacros(v.dailyGoals), foodPreferences: str(v.foodPreferences)?.trim() ?? '' }
+  return {
+    name: str(v.name) ?? '',
+    dailyGoals: readMacros(v.dailyGoals),
+    foodPreferences: str(v.foodPreferences)?.trim() ?? '',
+    staples: cleanStaples(v.staples),
+  }
 }
 
 export function normalize(s: unknown): AppState {
@@ -89,19 +126,28 @@ export function normalize(s: unknown): AppState {
   const settings = isObj(s.settings) ? s.settings : {}
   const list = <T>(v: unknown, read: (x: unknown) => T | null): T[] =>
     Array.isArray(v) ? v.map(read).filter((x): x is T => x !== null) : []
+  const fromV1 = s.version !== 2
+  const profile = readProfile(s.profile)
+  const wares = list(s.wares, readWare)
   return {
-    version: 1,
-    profile: readProfile(s.profile),
-    settings: { apiKey: str(settings.apiKey) ?? '', model: str(settings.model) || DEFAULT_MODEL },
-    wares: list(s.wares, readWare),
+    version: 2,
+    profile,
+    settings: {
+      apiKey: str(settings.apiKey) ?? '',
+      model: str(settings.model) || DEFAULT_MODEL,
+      // Users of version 1 have already been through Settings, food rules included.
+      rulesAnswered: settings.rulesAnswered === true || (fromV1 && profile !== null),
+    },
+    wares,
     recipes: list(s.recipes, readRecipe),
+    upgradeNotice: fromV1 ? wares.length > 0 : s.upgradeNotice === true,
   }
 }
 
 /** Export everything except the API key. */
 export function exportJson(state: AppState): string {
-  const { settings, ...rest } = state
-  return JSON.stringify({ ...rest, settings: { model: settings.model }, exportedAt: new Date().toISOString() }, null, 2)
+  const { settings, upgradeNotice: _notice, ...rest } = state
+  return JSON.stringify({ ...rest, settings: { model: settings.model, rulesAnswered: settings.rulesAnswered }, exportedAt: new Date().toISOString() }, null, 2)
 }
 
 /** Parses an export; throws with a readable message if the file is not one. Keeps this device's API key. */
@@ -117,6 +163,7 @@ export function importJson(text: string, current: AppState): AppState {
   }
   const next = normalize(parsed)
   next.settings.apiKey = current.settings.apiKey
+  next.upgradeNotice ||= current.upgradeNotice
   return next
 }
 

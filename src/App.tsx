@@ -1,40 +1,61 @@
 import { useState } from 'react'
-import { MealPage } from './components/MealPage'
+import { CookPage } from './components/CookPage'
+import { KitchenPage } from './components/KitchenPage'
 import { RecipesPage } from './components/RecipesPage'
 import { SettingsPage } from './components/SettingsPage'
-import { WaresPage } from './components/WaresPage'
-import { StoreProvider, useStore } from './store'
+import { StoreProvider } from './store'
 
-type Tab = 'meal' | 'wares' | 'recipes' | 'settings'
+type Tab = 'cook' | 'kitchen' | 'recipes'
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: 'meal', label: 'Plan', icon: '🍳' },
-  { id: 'wares', label: 'Wares', icon: '🥕' },
+  { id: 'cook', label: 'Cook', icon: '🍳' },
+  { id: 'kitchen', label: 'Kitchen', icon: '🥕' },
   { id: 'recipes', label: 'Recipes', icon: '📖' },
-  { id: 'settings', label: 'Settings', icon: '⚙️' },
 ]
 
 function Shell() {
-  const { state } = useStore()
-  const [tab, setTab] = useState<Tab>(() => (state.profile && state.settings.apiKey ? 'meal' : 'settings'))
+  const [tab, setTab] = useState<Tab>('cook')
+  // Settings is rarely used after setup, so it sits behind the gear rather than in the tab bar.
+  const [settings, setSettings] = useState(false)
+  const go = (t: Tab) => {
+    setSettings(false)
+    setTab(t)
+  }
   return (
     <div className="app">
       <header className="topbar">
         <h1>Kraesen</h1>
+        <button
+          type="button"
+          className={settings ? 'icon gear on' : 'icon gear'}
+          aria-label="Settings"
+          aria-pressed={settings}
+          onClick={() => setSettings((v) => !v)}
+        >
+          ⚙️
+        </button>
       </header>
       <main>
-        {tab === 'meal' && <MealPage goToSettings={() => setTab('settings')} goToWares={() => setTab('wares')} />}
-        {tab === 'wares' && <WaresPage />}
-        {tab === 'recipes' && <RecipesPage />}
-        {tab === 'settings' && <SettingsPage />}
+        {settings ? (
+          <SettingsPage onClose={() => setSettings(false)} />
+        ) : (
+          <>
+            {tab === 'cook' && <CookPage goToKitchen={() => go('kitchen')} />}
+            {tab === 'kitchen' && <KitchenPage />}
+            {tab === 'recipes' && <RecipesPage />}
+          </>
+        )}
       </main>
       <nav className="tabbar" aria-label="Sections">
-        {TABS.map((t) => (
-          <button key={t.id} type="button" className={tab === t.id ? 'active' : ''} aria-current={tab === t.id ? 'page' : undefined} onClick={() => setTab(t.id)}>
-            <span aria-hidden="true">{t.icon}</span>
-            {t.label}
-          </button>
-        ))}
+        {TABS.map((t) => {
+          const current = !settings && tab === t.id
+          return (
+            <button key={t.id} type="button" className={current ? 'active' : ''} aria-current={current ? 'page' : undefined} onClick={() => go(t.id)}>
+              <span aria-hidden="true">{t.icon}</span>
+              {t.label}
+            </button>
+          )
+        })}
       </nav>
     </div>
   )

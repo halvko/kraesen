@@ -74,7 +74,7 @@ describe('lookupBarcode', () => {
 
   it('names a product with no name after its barcode', async () => {
     mockFetch(200, found({ nutriments: { proteins_100g: 1 } }))
-    expect((await lookupBarcode('42'))?.name).toBe('Ware 42')
+    expect((await lookupBarcode('42'))?.name).toBe('Product 42')
   })
 
   it('strips non-digits from the barcode and skips the request for an empty one', async () => {
