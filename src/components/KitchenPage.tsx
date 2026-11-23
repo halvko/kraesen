@@ -82,7 +82,7 @@ export function KitchenPage() {
       key={w.id}
       food={w}
       onOpen={() => setMode({ kind: 'edit', id: w.id, draft: { ...w }, title: 'Edit food' })}
-      movedFrom={groupOf(w) !== w.stock ? groupOf(w) : undefined}
+      moved={groupOf(w) !== w.stock}
     />
   )
 
@@ -111,11 +111,13 @@ export function KitchenPage() {
       )}
       {GROUPS.map((g) => {
         const items = shown.filter((w) => groupOf(w) === g.stock).sort((a, b) => a.name.localeCompare(b.name))
-        if (items.length === 0 && !g.empty) return null
+        // The count is what is in this group now, including foods moved here whose rows stay in their old group.
+        const count = shown.filter((w) => w.stock === g.stock).length
+        if (items.length === 0 && count === 0 && !g.empty) return null
+        const arrived = count > 0 && items.length === 0 && <p className="hint">Foods moved here show up in this list the next time you open Kitchen.</p>
         const title = (
           <h2>
-            {/* The count is what is in this group now, not the rows kept here for the visit. */}
-            {STOCK_LABEL[g.stock]} <span className="count">{items.filter((w) => w.stock === g.stock).length}</span>
+            {STOCK_LABEL[g.stock]} <span className="count">{count}</span>
           </h2>
         )
         if (g.stock === 'off') {
@@ -123,6 +125,7 @@ export function KitchenPage() {
             <details key={g.stock} className="card group-off" open={!!q || undefined}>
               <summary>{title}</summary>
               <p className="hint">Kept for later. Claude never sees these.</p>
+              {arrived}
               <ul className="food-list">{items.map(row)}</ul>
             </details>
           )
@@ -130,7 +133,8 @@ export function KitchenPage() {
         return (
           <section key={g.stock} className="card">
             {title}
-            {items.length === 0 && <p className="hint">{g.empty}</p>}
+            {items.length === 0 && count === 0 && <p className="hint">{g.empty}</p>}
+            {arrived}
             <ul className="food-list">{items.map(row)}</ul>
           </section>
         )

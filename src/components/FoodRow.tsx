@@ -6,12 +6,12 @@ interface Props {
   food: Ware
   /** Opens the editor; without it the name is not a button. */
   onOpen?: () => void
-  /** The group the row is shown in when the food has since moved; the row then says where it went. */
-  movedFrom?: Stock
+  /** The food has moved to another group while the row stays in its old one; the row then says where it went. */
+  moved?: boolean
 }
 
 /** One food with its macros and a stock control. */
-export function FoodRow({ food, onOpen, movedFrom }: Props) {
+export function FoodRow({ food, onOpen, moved }: Props) {
   const { update } = useStore()
   const setStock = (stock: Stock) => update((s) => ({ ...s, wares: s.wares.map((w) => (w.id === food.id ? { ...w, stock } : w)) }))
   const label = (
@@ -19,7 +19,7 @@ export function FoodRow({ food, onOpen, movedFrom }: Props) {
       <span className="food-name">
         {food.name}
         {food.brand ? <small> · {food.brand}</small> : null}
-        {movedFrom && <span className="tag moved">moved to {STOCK_LABEL[food.stock]}</span>}
+        {moved && <span className="tag moved">moved to {STOCK_LABEL[food.stock]}</span>}
       </span>
       <span className="food-macros">
         P {food.per100.protein} · C {food.per100.carbs} · F {food.per100.fat} · {food.per100.kcal} kcal
@@ -27,7 +27,7 @@ export function FoodRow({ food, onOpen, movedFrom }: Props) {
     </>
   )
   return (
-    <li className={movedFrom ? 'food moved' : 'food'}>
+    <li className={moved ? 'food moved' : 'food'}>
       {onOpen ? (
         <button type="button" className="food-main" onClick={onOpen}>
           {label}
